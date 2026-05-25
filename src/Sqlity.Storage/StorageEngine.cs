@@ -88,20 +88,16 @@ public sealed class StorageEngine : IDisposable
         var table = GetTable(tableName);
         var primaryKey = ExtractPrimaryKey(table.Schema, values);
         var payload = SerializeRow(table.Schema, values);
-        var page = new TableLeafPage(_pager.ReadPage(table.RootPageId));
-        var insertStatus = page.TryInsert(new TableLeafCell(primaryKey, payload));
 
-        if (insertStatus == TableLeafInsertStatus.DuplicateKey)
+        try
         {
-            throw new InvalidOperationException($"Table '{tableName}' already contains a row with primary key {primaryKey}.");
+            new BPlusTree(_pager, table.RootPageId).Insert(new TableLeafCell(primaryKey, payload));
         }
-
-        if (insertStatus == TableLeafInsertStatus.PageFull)
+        catch (InvalidOperationException ex) when (ex.Message.StartsWith("Duplicate primary key"))
         {
-            throw new InvalidOperationException($"Table '{tableName}' is out of space on its root page. Page splits are not implemented yet.");
+            throw new InvalidOperationException(
+                $"Table '{tableName}' already contains a row with primary key {primaryKey}.", ex);
         }
-
-        _pager.WritePage(page.Page);
     }
 
     public void Delete(string tableName, long primaryKey)
@@ -109,15 +105,16 @@ public sealed class StorageEngine : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
 
         var table = GetTable(tableName);
-        var page = new TableLeafPage(_pager.ReadPage(table.RootPageId));
 
-        var status = page.TryDelete(primaryKey);
-
-        if (status == TableLeafDeleteStatus.NotFound)
+        try
         {
-            throw new InvalidOperationException($"Table '{tableName}' does not contain a row with primary key {primaryKey}.");
+            new BPlusTree(_pager, table.RootPageId).Delete(primaryKey);
         }
-        _pager.WritePage(page.Page);
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found"))
+        {
+            throw new InvalidOperationException(
+                $"Table '{tableName}' does not contain a row with primary key {primaryKey}.", ex);
+        }
     }
 
     public void Update(string tableName, long primaryKey, IReadOnlyList<object?> newValues)
@@ -126,28 +123,23 @@ public sealed class StorageEngine : IDisposable
 
         var table = GetTable(tableName);
         var payload = SerializeRow(table.Schema, newValues);
-        var page = new TableLeafPage(_pager.ReadPage(table.RootPageId));
 
-        var updateStatus = page.TryUpdate(new TableLeafCell(primaryKey, payload));
-
-        if (updateStatus == TableLeafUpdateStatus.NotFound)
+        try
         {
-            throw new InvalidOperationException($"Table '{tableName}' does not contain a row with primary key {primaryKey}.");
+            new BPlusTree(_pager, table.RootPageId).Update(new TableLeafCell(primaryKey, payload));
         }
-
-        if (updateStatus == TableLeafUpdateStatus.InsufficientSpace)
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found"))
         {
-            throw new InvalidOperationException($"Table '{tableName}' does not have enough space to update the row with primary key {primaryKey}. Page splits are not implemented yet.");
+            throw new InvalidOperationException(
+                $"Table '{tableName}' does not contain a row with primary key {primaryKey}.", ex);
         }
-
-        _pager.WritePage(page.Page);
     }
 
     public bool TryReadByPrimaryKey(string tableName, long primaryKey, out object?[]? values)
     {
         var table = GetTable(tableName);
-        var page = new TableLeafPage(_pager.ReadPage(table.RootPageId));
-        if (!page.TryGetCell(primaryKey, out var cell))
+
+        if (!new BPlusTree(_pager, table.RootPageId).TryGet(primaryKey, out var cell))
         {
             values = null;
             return false;
@@ -160,10 +152,10 @@ public sealed class StorageEngine : IDisposable
     public IReadOnlyList<object?[]> ReadAll(string tableName)
     {
         var table = GetTable(tableName);
-        var page = new TableLeafPage(_pager.ReadPage(table.RootPageId));
-        var rows = new List<object?[]>(page.CellCount);
+        var cells = new BPlusTree(_pager, table.RootPageId).ReadAll();
+        var rows = new List<object?[]>(cells.Count);
 
-        foreach (var cell in page.ReadAllCells())
+        foreach (var cell in cells)
         {
             rows.Add(_rowSerializer.Read(table.Schema, cell.Payload));
         }

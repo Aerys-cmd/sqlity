@@ -6,6 +6,7 @@ public static class BTreePageLayout
 {
     public const int CellPointerSize = sizeof(ushort);
     public const int LeafCellHeaderSize = sizeof(long) + sizeof(ushort);
+    public const int InternalCellSize = sizeof(long) + sizeof(uint);
 
     public static int GetPointerArrayOffset() => PageHeader.Size;
 

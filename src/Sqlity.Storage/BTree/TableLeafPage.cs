@@ -24,6 +24,15 @@ public sealed class TableLeafPage
 
     public ushort CellCount => Page.ReadHeader().CellCount;
 
+    // SpecialPageId stores the next-leaf pointer on leaf pages (0 = no next leaf).
+    public uint NextLeafPageId => Page.ReadHeader().SpecialPageId;
+
+    public void SetNextLeafPageId(uint nextPageId)
+    {
+        var header = Page.ReadHeader();
+        Page.WriteHeader(header with { SpecialPageId = nextPageId });
+    }
+
     public int FreeSpace
     {
         get
