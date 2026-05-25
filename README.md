@@ -11,7 +11,7 @@ Sqlity is an educational SQLite-like embedded database engine written in C# for 
 
 ## Current milestone
 
-The repository now contains a single-page storage engine plus the first executable SQL layer:
+The repository now contains a single-page storage engine plus an executable SQL layer:
 
 - a single-file database format
 - a fixed 4096-byte page model
@@ -20,7 +20,9 @@ The repository now contains a single-page storage engine plus the first executab
 - free-page list primitives
 - a persisted table catalog and schema serializer
 - single-page table storage with ordered primary-key insertion
-- MVP SQL execution for `CREATE TABLE`, `INSERT`, and `SELECT`
+- slotted-page compaction on delete (correct pointer array and cell content compaction)
+- in-place and resize-safe row updates
+- SQL execution for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
 - storage and query test coverage plus updated architecture documentation
 
 ## Repository layout
@@ -72,7 +74,7 @@ Sqlity uses:
 ## Incremental roadmap
 
 1. Add root-page search and page split behavior for the B-tree path.
-2. Add delete/compaction behavior for table leaf pages.
+2. ~~Add delete/compaction behavior for table leaf pages.~~ ✅ Done — `DELETE` and `UPDATE` are fully implemented with correct slotted-page compaction.
 3. Expose the engine through an ADO.NET provider.
 4. Add an EF Core provider after the ADO.NET provider is stable.
 5. Add transactions, then WAL, once the base storage design is solid.
@@ -110,11 +112,14 @@ foreach (var row in result.Rows)
 {
     Console.WriteLine($"{row[0]}, {row[1]}");
 }
+
+engine.Execute("UPDATE users SET name = 'Ada Lovelace' WHERE id = 1;");
+engine.Execute("DELETE FROM users WHERE id = 2;");
 ```
 
 Current limits to keep in mind:
 
-- supported statements are `CREATE TABLE`, `INSERT`, and `SELECT`
+- supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
 - `WHERE` currently supports only equality on the primary-key column
 - rows still need to fit inside a single table leaf page because page splits are not implemented yet
 

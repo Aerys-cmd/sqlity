@@ -8,11 +8,11 @@ The current milestone connected persisted storage to executable SQL. The next st
 - implement leaf-page split behavior
 - update `StorageEngine` and query execution so inserts can grow past a single page
 
-## 2. Delete and page maintenance
+## 2. ~~Delete and page maintenance~~ ✅ Done
 
-- add row delete support
-- compact fragmented table leaf pages
-- recycle emptied pages through the existing free-list path
+- ~~add row delete support~~ ✅ `DELETE FROM table WHERE pk = value` fully implemented
+- ~~compact fragmented table leaf pages~~ ✅ `TryDelete` performs correct slotted-page compaction
+- recycle emptied pages through the existing free-list path (page-level reclaim still pending)
 
 ## 3. ADO.NET provider MVP
 
@@ -23,7 +23,7 @@ The current milestone connected persisted storage to executable SQL. The next st
 ## 4. Better query semantics
 
 - extend `WHERE` beyond primary-key equality
-- add `UPDATE` and `DELETE`
+- ~~add `UPDATE` and `DELETE`~~ ✅ Both fully implemented
 - introduce a simple logical/physical execution split once more than one access path exists
 
 ## 5. Durability experiments

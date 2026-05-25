@@ -54,6 +54,26 @@ id | name
 (1 row(s))
 ```
 
+## Update a row
+
+```bash
+dotnet run --project samples/Sqlity.Cli -- demo.sqlity "UPDATE users SET name = 'Ada Lovelace' WHERE id = 1;"
+```
+
+```text
+Rows affected: 1
+```
+
+## Delete a row
+
+```bash
+dotnet run --project samples/Sqlity.Cli -- demo.sqlity "DELETE FROM users WHERE id = 2;"
+```
+
+```text
+Rows affected: 1
+```
+
 ## Create a table with a BLOB column
 
 ```bash

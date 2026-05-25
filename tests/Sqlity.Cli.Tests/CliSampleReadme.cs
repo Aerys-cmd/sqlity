@@ -64,6 +64,16 @@ internal static class CliSampleReadme
             ["demo.sqlity", "SELECT id, name FROM users WHERE id = 2;"]);
         scenario.AppendSection(
             builder,
+            "Update a row",
+            "dotnet run --project samples/Sqlity.Cli -- demo.sqlity \"UPDATE users SET name = 'Ada Lovelace' WHERE id = 1;\"",
+            ["demo.sqlity", "UPDATE users SET name = 'Ada Lovelace' WHERE id = 1;"]);
+        scenario.AppendSection(
+            builder,
+            "Delete a row",
+            "dotnet run --project samples/Sqlity.Cli -- demo.sqlity \"DELETE FROM users WHERE id = 2;\"",
+            ["demo.sqlity", "DELETE FROM users WHERE id = 2;"]);
+        scenario.AppendSection(
+            builder,
             "Create a table with a BLOB column",
             "dotnet run --project samples/Sqlity.Cli -- demo.sqlity \"CREATE TABLE files (id INT64 PRIMARY KEY, name STRING, payload BLOB);\"",
             ["demo.sqlity", "CREATE TABLE files (id INT64 PRIMARY KEY, name STRING, payload BLOB);"]);

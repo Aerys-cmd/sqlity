@@ -286,6 +286,8 @@ The current implementation supports:
 - ordered insertion by primary key
 - duplicate-key rejection within a page
 - binary-search lookup inside the page
+- row deletion with correct slotted-page compaction (pointer values, pointer array slot removal, and cell content block shift)
+- row update: in-place overwrite for same-size payload; safe delete-then-reinsert with space preflight for size-changed payload
 - persistence through `FilePager`
 - catalog-backed table discovery after reopening the file
 - table-level row operations through `StorageEngine`
@@ -293,7 +295,6 @@ The current implementation supports:
 Current limitations:
 
 - no page split yet
-- no delete or compaction path yet
 - no overflow handling for large rows yet
 
 ### Free-list pages
@@ -308,9 +309,10 @@ Current limitations:
 2. **Writable table leaf pages**: cell insertion, slot management, free-space accounting. Completed for a single page.
 3. **Table catalog**: schema persistence and reopen support. Implemented on top of a system catalog leaf page.
 4. **MVP query execution**: minimal parser + binder + executor for `CREATE TABLE`, `INSERT`, and `SELECT`. Implemented for single-page tables.
-5. **B-tree navigation**: root-page search across multiple pages and leaf splits.
-6. **Provider integration**: ADO.NET surface once multi-page query execution is stable.
-7. **Advanced durability**: transactions, rollback/WAL, and crash-recovery experiments.
+5. **Delete and update**: slotted-page compaction, row deletion, and in-place/resize-safe row update. Implemented for single-page tables. `DELETE` and `UPDATE` SQL statements fully supported.
+6. **B-tree navigation**: root-page search across multiple pages and leaf splits.
+7. **Provider integration**: ADO.NET surface once multi-page query execution is stable.
+8. **Advanced durability**: transactions, rollback/WAL, and crash-recovery experiments.
 
 ## 11. Writable table leaf page behavior
 
@@ -329,15 +331,13 @@ It wraps a `PageBuffer` whose `PageHeader.PageType` is `TableLeaf` and provides 
 ### Tradeoffs
 
 - inserts still become expensive once a page is dense because the pointer array shifts
-- deletes and compaction are still missing, so fragmentation accounting is incomplete
 - the implementation is page-local only; tree-wide balancing comes later
 
 ### Current design
 
-- `TryInsert` performs a binary search over primary keys
-- duplicate keys return `DuplicateKey`
-- insufficient space returns `PageFull`
-- successful inserts write the cell at the back of the page and insert a new slot pointer in sorted order
+- `TryInsert` performs a binary search over primary keys; duplicate keys return `DuplicateKey`; insufficient space returns `PageFull`; successful inserts write the cell at the back of the page and insert a new slot pointer in sorted order
+- `TryDelete` removes a cell by its primary key: locates the slot via binary search, compacts the cell content block toward higher offsets, updates all pointer values that shifted, removes the pointer array slot, and updates the header (`CellCount`, `CellContentStart`)
+- `TryUpdate` handles same-size payloads with an in-place overwrite; for size-changed payloads it pre-checks available free space before deleting the old cell, then reinserts at the correct sorted position
 - `TryGetCell` and `ReadAllCells` decode the sorted page contents
 
 ## 10. Why this is a good MVP
