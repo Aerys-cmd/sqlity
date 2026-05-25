@@ -104,6 +104,45 @@ public sealed class StorageEngine : IDisposable
         _pager.WritePage(page.Page);
     }
 
+    public void Delete(string tableName, long primaryKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        var table = GetTable(tableName);
+        var page = new TableLeafPage(_pager.ReadPage(table.RootPageId));
+
+        var status = page.TryDelete(primaryKey);
+
+        if (status == TableLeafDeleteStatus.NotFound)
+        {
+            throw new InvalidOperationException($"Table '{tableName}' does not contain a row with primary key {primaryKey}.");
+        }
+        _pager.WritePage(page.Page);
+    }
+
+    public void Update(string tableName, long primaryKey, IReadOnlyList<object?> newValues)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        var table = GetTable(tableName);
+        var payload = SerializeRow(table.Schema, newValues);
+        var page = new TableLeafPage(_pager.ReadPage(table.RootPageId));
+
+        var updateStatus = page.TryUpdate(new TableLeafCell(primaryKey, payload));
+
+        if (updateStatus == TableLeafUpdateStatus.NotFound)
+        {
+            throw new InvalidOperationException($"Table '{tableName}' does not contain a row with primary key {primaryKey}.");
+        }
+
+        if (updateStatus == TableLeafUpdateStatus.InsufficientSpace)
+        {
+            throw new InvalidOperationException($"Table '{tableName}' does not have enough space to update the row with primary key {primaryKey}. Page splits are not implemented yet.");
+        }
+
+        _pager.WritePage(page.Page);
+    }
+
     public bool TryReadByPrimaryKey(string tableName, long primaryKey, out object?[]? values)
     {
         var table = GetTable(tableName);

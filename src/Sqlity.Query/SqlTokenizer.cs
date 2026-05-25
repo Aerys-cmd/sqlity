@@ -92,6 +92,9 @@ internal static class SqlTokenizer
             "WHERE" => SqlTokenKind.Where,
             "TRUE" => SqlTokenKind.True,
             "FALSE" => SqlTokenKind.False,
+            "UPDATE" => SqlTokenKind.Update,
+            "DELETE" => SqlTokenKind.Delete,
+            "SET" => SqlTokenKind.Set,
             _ => SqlTokenKind.Identifier
         };
 
@@ -198,5 +201,8 @@ internal enum SqlTokenKind
     Where = 19,
     True = 20,
     False = 21,
-    EndOfInput = 22
+    EndOfInput = 22,
+    Update = 23,
+    Delete = 24,
+    Set = 25
 }

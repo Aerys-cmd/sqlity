@@ -72,6 +72,110 @@ public sealed class TableLeafPage
         return TableLeafInsertStatus.Success;
     }
 
+    public TableLeafDeleteStatus TryDelete(long primaryKey)
+    {
+        var header = Page.ReadHeader();
+        var search = FindSlot(primaryKey, header);
+        if (!search.Found)
+        {
+            return TableLeafDeleteStatus.NotFound;
+        }
+
+        var cellOffset = ReadCellPointer(search.InsertIndex);
+        var cell = TableLeafCell.ReadFrom(Page.ReadOnlySpan[cellOffset..]);
+        var cellSize = cell.GetRequiredSize();
+
+        // Cells at offsets [CellContentStart, cellOffset) were inserted more recently and sit
+        // physically above the deleted cell. Shift them toward higher offsets by cellSize to
+        // close the gap left by the removed cell.
+        var bytesToCompact = cellOffset - header.CellContentStart;
+        if (bytesToCompact > 0)
+        {
+            Page.Span
+                .Slice(header.CellContentStart, bytesToCompact)
+                .CopyTo(Page.Span[(header.CellContentStart + cellSize)..]);
+        }
+
+        // Update pointers for the cells that just moved (those at offsets below cellOffset).
+        for (ushort i = 0; i < header.CellCount; i++)
+        {
+            if (i == search.InsertIndex)
+            {
+                continue;
+            }
+
+            var pointer = ReadCellPointer(i);
+            if (pointer < cellOffset)
+            {
+                WriteCellPointer(i, checked((ushort)(pointer + cellSize)));
+            }
+        }
+
+        // Remove the deleted cell's slot from the pointer array by shifting
+        // all subsequent slots one position to the left.
+        var pointerOffset = BTreePageLayout.GetCellPointerOffset(search.InsertIndex);
+        var trailingPointerBytes = (header.CellCount - search.InsertIndex - 1) * BTreePageLayout.CellPointerSize;
+        if (trailingPointerBytes > 0)
+        {
+            Page.Span
+                .Slice(pointerOffset + BTreePageLayout.CellPointerSize, trailingPointerBytes)
+                .CopyTo(Page.Span[pointerOffset..]);
+        }
+
+        Page.WriteHeader(
+            header with
+            {
+                CellCount = checked((ushort)(header.CellCount - 1)),
+                CellContentStart = checked((ushort)(header.CellContentStart + cellSize))
+            });
+
+        return TableLeafDeleteStatus.Success;
+    }
+
+    public TableLeafUpdateStatus TryUpdate(in TableLeafCell cell)
+    {
+        var header = Page.ReadHeader();
+        var search = FindSlot(cell.PrimaryKey, header);
+        if (!search.Found)
+        {
+            return TableLeafUpdateStatus.NotFound;
+        }
+
+        var existingCellOffset = ReadCellPointer(search.InsertIndex);
+        var existingCell = TableLeafCell.ReadFrom(Page.ReadOnlySpan[existingCellOffset..]);
+        var oldSize = existingCell.GetRequiredSize();
+        var newSize = cell.GetRequiredSize();
+
+        // Same size: overwrite in place — no compaction or pointer changes needed.
+        if (newSize == oldSize)
+        {
+            cell.WriteTo(Page.Span[existingCellOffset..]);
+            return TableLeafUpdateStatus.Success;
+        }
+
+        // Growing update: check space before touching anything to avoid data loss.
+        if (newSize > oldSize && newSize - oldSize > FreeSpace)
+        {
+            return TableLeafUpdateStatus.InsufficientSpace;
+        }
+
+        // Size changed: delete the old cell and re-insert the new one.
+        // TryDelete compacts the page; TryInsert places the cell at the new CellContentStart.
+        // Safe because we already verified sufficient space for growing updates above.
+        var deleteStatus = TryDelete(cell.PrimaryKey);
+        if (deleteStatus != TableLeafDeleteStatus.Success)
+        {
+            return TableLeafUpdateStatus.NotFound;
+        }
+
+        return TryInsert(cell) switch
+        {
+            TableLeafInsertStatus.Success => TableLeafUpdateStatus.Success,
+            TableLeafInsertStatus.PageFull => TableLeafUpdateStatus.InsufficientSpace,
+            _ => TableLeafUpdateStatus.NotFound
+        };
+    }
+
     public bool TryGetCell(long primaryKey, out TableLeafCell cell)
     {
         var header = Page.ReadHeader();

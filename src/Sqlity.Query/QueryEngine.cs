@@ -36,6 +36,8 @@ public sealed class QueryEngine : IDisposable
             CreateTableStatement createTable => ExecuteCreateTable(createTable),
             InsertStatement insert => ExecuteInsert(insert),
             SelectStatement select => ExecuteSelect(select),
+            DeleteStatement delete => ExecuteDelete(delete),
+            UpdateStatement update => ExecuteUpdate(update),
             _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
         };
     }
@@ -105,6 +107,61 @@ public sealed class QueryEngine : IDisposable
         var projectedColumns = selectedOrdinals.Select(ordinal => table.Schema.Columns[ordinal].Name).ToArray();
 
         return QueryExecutionResult.WithRows(projectedColumns, projectedRows);
+    }
+
+    private QueryExecutionResult ExecuteDelete(DeleteStatement statement)
+    {
+        var table = _storage.GetTable(statement.TableName);
+        var filterOrdinal = table.Schema.GetColumnOrdinal(statement.Filter.ColumnName);
+        if (filterOrdinal != table.Schema.PrimaryKeyOrdinal)
+        {
+            throw new InvalidOperationException($"WHERE only supports the primary key column '{table.Schema.PrimaryKeyColumn.Name}'.");
+        }
+
+        var primaryKey = ConvertLiteral(table.Schema.PrimaryKeyColumn, statement.Filter.Value);
+        if (primaryKey is not long primaryKeyValue)
+        {
+            throw new InvalidOperationException("Primary key filters must resolve to Int64 values.");
+        }
+
+        _storage.Delete(table.TableName, primaryKeyValue);
+        return QueryExecutionResult.Empty(rowsAffected: 1);
+    }
+
+    private QueryExecutionResult ExecuteUpdate(UpdateStatement statement)
+    {
+        var table = _storage.GetTable(statement.TableName);
+        var filterOrdinal = table.Schema.GetColumnOrdinal(statement.Filter.ColumnName);
+        if (filterOrdinal != table.Schema.PrimaryKeyOrdinal)
+        {
+            throw new InvalidOperationException($"WHERE only supports the primary key column '{table.Schema.PrimaryKeyColumn.Name}'.");
+        }
+
+        var primaryKey = ConvertLiteral(table.Schema.PrimaryKeyColumn, statement.Filter.Value);
+        if (primaryKey is not long primaryKeyValue)
+        {
+            throw new InvalidOperationException("Primary key filters must resolve to Int64 values.");
+        }
+
+        if (!_storage.TryReadByPrimaryKey(table.TableName, primaryKeyValue, out var existingValues) || existingValues is null)
+        {
+            throw new InvalidOperationException($"Table '{table.TableName}' does not contain a row with primary key {primaryKeyValue}.");
+        }
+
+        var newValues = existingValues.ToArray();
+        foreach (var assignment in statement.Assignments)
+        {
+            var columnOrdinal = table.Schema.GetColumnOrdinal(assignment.ColumnName);
+            if (columnOrdinal == table.Schema.PrimaryKeyOrdinal)
+            {
+                throw new InvalidOperationException($"Cannot update the primary key column '{table.Schema.PrimaryKeyColumn.Name}'.");
+            }
+
+            newValues[columnOrdinal] = ConvertLiteral(table.Schema.Columns[columnOrdinal], assignment.Value);
+        }
+
+        _storage.Update(table.TableName, primaryKeyValue, newValues);
+        return QueryExecutionResult.Empty(rowsAffected: 1);
     }
 
     private object?[] BindInsertValues(TableInfo table, InsertStatement statement)

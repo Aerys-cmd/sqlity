@@ -20,6 +20,8 @@ internal sealed class SqlParser
             SqlTokenKind.Create => ParseCreateTable(),
             SqlTokenKind.Insert => ParseInsert(),
             SqlTokenKind.Select => ParseSelect(),
+            SqlTokenKind.Update => ParseUpdate(),
+            SqlTokenKind.Delete => ParseDelete(),
             _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
@@ -124,6 +126,43 @@ internal sealed class SqlParser
         return new SelectStatement(tableName, columns, filter);
     }
 
+    private UpdateStatement ParseUpdate()
+    {
+        Expect(SqlTokenKind.Update);
+        var tableName = ExpectIdentifier("Expected a table name after UPDATE.");
+        Expect(SqlTokenKind.Set);
+
+        var assignments = new List<ColumnAssignment>();
+        do
+        {
+            var columnName = ExpectIdentifier("Expected a column name in the UPDATE assignment list.");
+            Expect(SqlTokenKind.Equals);
+            var value = ParseLiteral();
+            assignments.Add(new ColumnAssignment(columnName, value));
+        }
+        while (Match(SqlTokenKind.Comma));
+
+        Expect(SqlTokenKind.Where);
+        var filterColumnName = ExpectIdentifier("Expected a column name after WHERE.");
+        Expect(SqlTokenKind.Equals);
+        var filterValue = ParseLiteral();
+        var filter = new PrimaryKeyFilter(filterColumnName, filterValue);
+
+        return new UpdateStatement(tableName, assignments, filter);
+    }
+    private DeleteStatement ParseDelete()
+    {
+        Expect(SqlTokenKind.Delete);
+        Expect(SqlTokenKind.From);
+        var tableName = ExpectIdentifier("Expected a table name after DELETE FROM.");
+
+        Expect(SqlTokenKind.Where);
+        var columnName = ExpectIdentifier("Expected a column name after WHERE.");
+        Expect(SqlTokenKind.Equals);
+        var filter = new PrimaryKeyFilter(columnName, ParseLiteral());
+
+        return new DeleteStatement(tableName, filter);
+    }
     private SqlLiteral ParseLiteral()
     {
         var token = Advance();
@@ -188,6 +227,9 @@ internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? 
 
 internal sealed record SelectStatement(string TableName, IReadOnlyList<string>? Columns, PrimaryKeyFilter? Filter) : SqlStatement;
 
+internal sealed record DeleteStatement(string TableName, PrimaryKeyFilter Filter) : SqlStatement;
+internal sealed record UpdateStatement(string TableName, IReadOnlyList<ColumnAssignment> Assignments, PrimaryKeyFilter Filter) : SqlStatement;
+internal sealed record ColumnAssignment(string ColumnName, SqlLiteral Value);
 internal sealed record ColumnSpecification(string Name, string TypeName, bool IsPrimaryKey);
 
 internal sealed record PrimaryKeyFilter(string ColumnName, SqlLiteral Value);
