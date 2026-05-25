@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/Sqlity.Cli/Sqlity.Cli.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Sqlity.Ado/Sqlity.Ado.csproj" />
+    <Project Path="src/Sqlity.Core/Sqlity.Core.csproj" />
+    <Project Path="src/Sqlity.EFCore/Sqlity.EFCore.csproj" />
+    <Project Path="src/Sqlity.Query/Sqlity.Query.csproj" />
+    <Project Path="src/Sqlity.Storage/Sqlity.Storage.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Sqlity.Cli.Tests/Sqlity.Cli.Tests.csproj" />
+    <Project Path="tests/Sqlity.Query.Tests/Sqlity.Query.Tests.csproj" />
+    <Project Path="tests/Sqlity.Storage.Tests/Sqlity.Storage.Tests.csproj" />
+  </Folder>
+</Solution>
