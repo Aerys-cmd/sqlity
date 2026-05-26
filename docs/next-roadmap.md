@@ -2,11 +2,11 @@
 
 The current milestone connected persisted storage to executable SQL. The next steps should deepen correctness and widen the public surface without skipping the core database mechanics.
 
-## 1. Multi-page table navigation
+## 1. ~~Multi-page table navigation~~ ✅ Done
 
-- add root-to-leaf search instead of assuming one leaf page per table
-- implement leaf-page split behavior
-- update `StorageEngine` and query execution so inserts can grow past a single page
+- ~~add root-to-leaf search instead of assuming one leaf page per table~~ ✅ root-to-leaf traversal with ancestor stack implemented in `BPlusTree`
+- ~~implement leaf-page split behavior~~ ✅ leaf split (byte-size-based) + internal split + root promotion implemented
+- ~~update `StorageEngine` and query execution so inserts can grow past a single page~~ ✅ all five DML operations delegate to `BPlusTree`
 
 ## 2. ~~Delete and page maintenance~~ ✅ Done
 
@@ -37,4 +37,4 @@ The current milestone connected persisted storage to executable SQL. The next st
 - document the minimal `QueryEngine(filePath)` path so a caller can create or reopen a `.sqlity` file
 - add a tiny sample app or CLI that accepts SQL text and prints result rows
 - keep the first runnable workflow focused on `CREATE TABLE`, `INSERT`, and `SELECT`
-- make current limits explicit: single-page tables and `WHERE` only on the primary key
+- make current limits explicit: ~~single-page tables and~~ `WHERE` only on the primary key

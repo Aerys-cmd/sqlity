@@ -196,13 +196,15 @@ A B-tree stores sorted keys across many pages while keeping the tree shallow.
 
 ### Sqlity choice
 
-The initial storage design is already B-tree-oriented even before full B-tree mutation logic exists:
+Sqlity uses a **B+ tree** variant where all data lives in leaf pages and internal pages contain only separator keys and child page ids. This keeps leaf-chain scans (`ReadAll`) independent of tree height.
 
-- regular pages have slotted-page metadata
-- table leaf cells store `primary-key + payload`
-- future internal pages will store separator keys and child page ids
+Key design decisions:
 
-This lets the project grow incrementally without throwing away the first page format.
+- Leaf pages are linked as a singly linked list using `PageHeader.SpecialPageId` (the "next leaf" pointer). `ReadAll` walks this chain without recursing the tree.
+- Internal pages use the same slotted-page layout as leaf pages. Each cell is a fixed 12-byte `(DividerKey int64, RightChildPageId uint32)` pair. `SpecialPageId` stores the leftmost child page id.
+- On root overflow the root page id never changes. Content is moved to freshly allocated pages and the root is reformatted in-place as an internal page. This means the system catalog never needs updating after a split.
+- Leaf splits use a byte-size-based midpoint rather than a count-based one, so variable-length rows are distributed evenly across the two new pages.
+- No merge on delete. Underflowing pages are left in place (acceptable for an educational engine at this stage).
 
 ## 7. Proposed namespaces and classes
 
@@ -240,8 +242,12 @@ This lets the project grow incrementally without throwing away the first page fo
 
 ### `Sqlity.Storage.BTree`
 
-- `BTreePageLayout`: slot and cell layout constants
-- `TableLeafCell`: initial leaf cell binary format
+- `BTreePageLayout`: slot and cell layout constants, including `InternalCellSize = 12`
+- `TableLeafCell`: leaf cell binary format
+- `TableInternalCell`: fixed 12-byte internal cell `(DividerKey int64, RightChildPageId uint32)`
+- `TableInternalInsertStatus`: enum for insert outcomes (`Success`, `DuplicateKey`, `PageFull`)
+- `TableInternalPage`: slotted-page internal B-tree node with binary-search child routing
+- `BPlusTree`: full B+ tree implementation — root-to-leaf traversal, leaf split, internal split, root promotion, and all five DML operations
 
 ### `Sqlity.Storage.IO`
 
@@ -249,7 +255,7 @@ This lets the project grow incrementally without throwing away the first page fo
 
 ### `Sqlity.Storage`
 
-- `StorageEngine`: table creation, row insertion, catalog bootstrap, and row reads over the pager
+- `StorageEngine`: table creation, row DML (insert/delete/update/lookup/scan), catalog bootstrap, and all operations delegated through `BPlusTree`
 
 ## 8. Initial page format proposal
 
@@ -272,6 +278,18 @@ This lets the project grow incrementally without throwing away the first page fo
 
 Using a normal table leaf page here keeps metadata on the same storage path as user data and avoids inventing a second persistence format for the MVP.
 
+### Table internal pages
+
+Internal pages route searches from the root down to the correct leaf. They use the same slotted-page layout as leaf pages.
+
+- generic `PageHeader`; `PageHeader.SpecialPageId` stores the **leftmost child page id**
+- slot array of `ushort` cell offsets (sorted ascending by divider key)
+- each cell is a fixed 12 bytes:
+  - `Int64` divider key (8 bytes)
+  - `UInt32` right-child page id (4 bytes)
+
+Routing rule: for a search key `k`, follow the rightmost divider `d` where `d <= k`; if `k` is less than all dividers, follow the leftmost child.
+
 ### Table leaf pages
 
 - generic `PageHeader`
@@ -283,10 +301,13 @@ Using a normal table leaf page here keeps metadata on the same storage path as u
 
 The current implementation supports:
 
-- ordered insertion by primary key
-- duplicate-key rejection within a page
-- binary-search lookup inside the page
-- row deletion with correct slotted-page compaction (pointer values, pointer array slot removal, and cell content block shift)
+- ordered insertion by primary key, growing across multiple pages via B+ tree leaf splits
+- root promotion when the root overflows (root page id is stable; catalog is never updated on splits)
+- root-to-leaf traversal with an ancestor stack for correct separator propagation during splits
+- duplicate-key rejection across the whole tree
+- binary-search lookup from root to the correct leaf
+- `ReadAll` scans the leaf chain without re-traversing the tree
+- row deletion with correct slotted-page compaction
 - row update: in-place overwrite for same-size payload; safe delete-then-reinsert with space preflight for size-changed payload
 - persistence through `FilePager`
 - catalog-backed table discovery after reopening the file
@@ -294,8 +315,8 @@ The current implementation supports:
 
 Current limitations:
 
-- no page split yet
-- no overflow handling for large rows yet
+- no overflow handling for rows larger than a single page
+- no page merge on delete (underflowing pages are not reclaimed)
 
 ### Free-list pages
 
@@ -309,8 +330,8 @@ Current limitations:
 2. **Writable table leaf pages**: cell insertion, slot management, free-space accounting. Completed for a single page.
 3. **Table catalog**: schema persistence and reopen support. Implemented on top of a system catalog leaf page.
 4. **MVP query execution**: minimal parser + binder + executor for `CREATE TABLE`, `INSERT`, and `SELECT`. Implemented for single-page tables.
-5. **Delete and update**: slotted-page compaction, row deletion, and in-place/resize-safe row update. Implemented for single-page tables. `DELETE` and `UPDATE` SQL statements fully supported.
-6. **B-tree navigation**: root-page search across multiple pages and leaf splits.
+5. **Delete and update**: slotted-page compaction, row deletion, and in-place/resize-safe row update. `DELETE` and `UPDATE` SQL statements fully supported.
+6. **B-tree navigation**: root-to-leaf traversal, leaf-page splits, internal-page splits, and root promotion. Tables now grow across as many pages as needed with no catalog update required on splits. ✅ Implemented.
 7. **Provider integration**: ADO.NET surface once multi-page query execution is stable.
 8. **Advanced durability**: transactions, rollback/WAL, and crash-recovery experiments.
 
