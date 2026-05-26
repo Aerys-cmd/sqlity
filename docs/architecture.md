@@ -8,7 +8,7 @@ Owns the database file, fixed-size pages, binary serialization, free-page tracki
 
 ## 2. Query Engine
 
-Owns SQL tokenization, parsing, binding, logical operations, and execution against storage primitives. The current query engine is deliberately small and supports `CREATE TABLE`, `INSERT`, `SELECT`, and `WHERE` on the primary key.
+Owns SQL tokenization, parsing, binding, logical operations, and execution against storage primitives. The current query engine is deliberately small and supports `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `CREATE INDEX`, `CREATE UNIQUE INDEX`, and compound `WHERE` expressions. A rule-based logical/physical query planner chooses between full scans and secondary-index seeks based on available indexes and predicate coverage.
 
 ## 3. ADO.NET Provider
 
@@ -28,7 +28,7 @@ Owns EF Core metadata mapping, query translation, migrations integration strateg
 ## Current implementation status
 
 - `Sqlity.Core`: started
-- `Sqlity.Storage`: multi-page B+ tree storage engine, persisted catalog, full row DML (insert/delete/update) with slotted-page compaction, leaf-page splits, internal-page splits, stable root promotion, and rollback-journal transactions implemented
-- `Sqlity.Query`: SQL parser and executor for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `BEGIN`, `COMMIT`, and `ROLLBACK` implemented
+- `Sqlity.Storage`: multi-page B+ tree storage engine, persisted catalog, full row DML (insert/delete/update) with slotted-page compaction, leaf-page splits, internal-page splits, stable root promotion, rollback-journal transactions, secondary B+ trees with sort-preserving key encoding, persisted index catalog, and automatic index maintenance on all DML operations implemented
+- `Sqlity.Query`: SQL parser and executor for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `CREATE INDEX`, `CREATE UNIQUE INDEX`, `BEGIN`, `COMMIT`, and `ROLLBACK` implemented; rule-based logical/physical query planner with `QueryPlanner` and `QueryExecutor` selects index seeks over full scans when applicable
 - `Sqlity.Ado`: fully implemented — `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`, `SqlityParameterCollection`, `SqlityTransaction` (full commit/rollback support)
 - `Sqlity.EFCore`: documented, code not implemented yet

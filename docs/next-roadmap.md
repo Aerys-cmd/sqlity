@@ -22,11 +22,12 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - auto-commit for statements executed outside an explicit `BEGIN` — **done**
 - multi-statement batch execution in a single `Execute` / `ExecuteNonQuery` call — **done**
 
-## 4. Secondary indexes and query planning
+## 4. Secondary indexes and query planning ✅
 
-- parse and store `CREATE INDEX` in the catalog
-- build a secondary B+ tree per index
-- introduce a logical/physical execution split so the planner can choose between a full scan and an index seek
+- parse and store `CREATE [UNIQUE] INDEX` in a dedicated index catalog — **done**
+- build a secondary B+ tree per index with sort-preserving key encoding — **done**
+- automatic index maintenance on `INSERT`, `DELETE`, and `UPDATE` — **done**
+- rule-based logical/physical query planner: equality predicates on leading index columns produce an index seek; unmatched predicates become a post-filter — **done**
 
 ## 5. Wider SQL surface
 

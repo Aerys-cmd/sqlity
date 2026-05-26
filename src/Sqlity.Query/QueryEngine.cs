@@ -1,3 +1,4 @@
+using Sqlity.Query.Planner;
 using Sqlity.Storage;
 using Sqlity.Storage.Catalog;
 using Sqlity.Storage.Rows;
@@ -8,6 +9,8 @@ public sealed class QueryEngine : IDisposable
 {
     private readonly StorageEngine _storage;
     private readonly bool _ownsStorage;
+    private readonly QueryPlanner _planner;
+    private readonly QueryExecutor _executor;
 
     public QueryEngine(StorageEngine storage)
         : this(storage, ownsStorage: false)
@@ -25,6 +28,8 @@ public sealed class QueryEngine : IDisposable
 
         _storage = storage;
         _ownsStorage = ownsStorage;
+        _planner = new QueryPlanner(storage);
+        _executor = new QueryExecutor(storage);
     }
 
     public bool InTransaction => _storage.InTransaction;
@@ -119,6 +124,7 @@ public sealed class QueryEngine : IDisposable
             var result = statement switch
             {
                 CreateTableStatement createTable => ExecuteCreateTable(createTable),
+                CreateIndexStatement createIndex => ExecuteCreateIndex(createIndex),
                 InsertStatement insert => ExecuteInsert(insert),
                 SelectStatement select => ExecuteSelect(select),
                 DeleteStatement delete => ExecuteDelete(delete),
@@ -177,6 +183,12 @@ public sealed class QueryEngine : IDisposable
         return QueryExecutionResult.Empty(rowsAffected: 0);
     }
 
+    private QueryExecutionResult ExecuteCreateIndex(CreateIndexStatement statement)
+    {
+        _storage.CreateIndex(statement.IndexName, statement.TableName, statement.Columns, statement.IsUnique);
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
     private QueryExecutionResult ExecuteInsert(InsertStatement statement)
     {
         var table = _storage.GetTable(statement.TableName);
@@ -192,9 +204,10 @@ public sealed class QueryEngine : IDisposable
         if (statement.Joins.Count == 0)
         {
             var selectedOrdinals = BindSingleTableColumns(fromTable.Schema, statement.Columns);
-            var rows = statement.Filter is null
-                ? _storage.ReadAll(statement.TableName)
-                : ReadFilteredRows(fromTable, statement.Filter);
+
+            // Route through the query planner for single-table queries.
+            var plan = _planner.Plan(fromTable, statement.Filter);
+            var rows = _executor.Execute(plan);
 
             var projectedRows = rows
                 .Select(row => selectedOrdinals.Select(i => row[i]).ToArray())
@@ -277,7 +290,7 @@ public sealed class QueryEngine : IDisposable
         IEnumerable<object?[]> filteredRows = currentRows;
         if (statement.Filter is not null)
         {
-            filteredRows = currentRows.Where(row => EvaluateWhereInContext(statement.Filter, row, context));
+            filteredRows = currentRows.Where(row => QueryExecutor.Evaluate(statement.Filter, row, context));
         }
 
         var (selectedIndices, outputColumnNames, outputColumnTypes) = BindJoinColumns(statement.Columns, context);
@@ -301,7 +314,7 @@ public sealed class QueryEngine : IDisposable
 
         var context = new[] { (Table: table, Offset: 0) };
         var matchingRows = _storage.ReadAll(table.TableName)
-            .Where(row => EvaluateWhereInContext(statement.Filter, row, context))
+            .Where(row => QueryExecutor.Evaluate(statement.Filter, row, context))
             .ToArray();
 
         foreach (var row in matchingRows)
@@ -330,7 +343,7 @@ public sealed class QueryEngine : IDisposable
 
         var context = new[] { (Table: table, Offset: 0) };
         var matchingRows = _storage.ReadAll(table.TableName)
-            .Where(row => EvaluateWhereInContext(statement.Filter, row, context))
+            .Where(row => QueryExecutor.Evaluate(statement.Filter, row, context))
             .ToArray();
 
         foreach (var row in matchingRows)
@@ -447,7 +460,7 @@ public sealed class QueryEngine : IDisposable
 
         var context = new[] { (Table: table, Offset: 0) };
         return _storage.ReadAll(table.TableName)
-            .Where(row => EvaluateWhereInContext(filter, row, context))
+            .Where(row => QueryExecutor.Evaluate(filter, row, context))
             .ToArray();
     }
 
@@ -466,106 +479,6 @@ public sealed class QueryEngine : IDisposable
             return false;
         primaryKey = pk;
         return true;
-    }
-
-    private static bool EvaluateWhereInContext(
-        WhereExpression filter,
-        object?[] row,
-        IReadOnlyList<(TableInfo Table, int Offset)> context)
-    {
-        return filter switch
-        {
-            BinaryLogicalExpression binary => binary.Op == LogicalOp.And
-                ? EvaluateWhereInContext(binary.Left, row, context) &&
-                  EvaluateWhereInContext(binary.Right, row, context)
-                : EvaluateWhereInContext(binary.Left, row, context) ||
-                  EvaluateWhereInContext(binary.Right, row, context),
-
-            ComparisonExpression cmp =>
-                EvaluateComparison(row[ResolveColumn(cmp.TableName, cmp.ColumnName, context)], cmp.Op, cmp.Value.Value),
-
-            NullCheckExpression nullCheck =>
-                EvaluateNullCheck(row[ResolveColumn(nullCheck.TableName, nullCheck.ColumnName, context)], nullCheck.ExpectNull),
-
-            _ => throw new InvalidOperationException($"Unknown WHERE expression type '{filter.GetType().Name}'.")
-        };
-    }
-
-    private static bool EvaluateNullCheck(object? columnValue, bool expectNull) =>
-        expectNull ? columnValue is null : columnValue is not null;
-
-    private static int ResolveColumn(
-        string? tableName,
-        string columnName,
-        IReadOnlyList<(TableInfo Table, int Offset)> context)
-    {
-        if (tableName is not null)
-        {
-            var entry = context.FirstOrDefault(e =>
-                string.Equals(e.Table.TableName, tableName, StringComparison.OrdinalIgnoreCase));
-            if (entry.Table is null)
-                throw new InvalidOperationException($"Table '{tableName}' not found.");
-            return entry.Offset + entry.Table.Schema.GetColumnOrdinal(columnName);
-        }
-
-        var matches = new List<int>();
-        foreach (var (table, offset) in context)
-        {
-            if (table.Schema.TryGetColumnOrdinal(columnName, out var ordinal))
-                matches.Add(offset + ordinal);
-        }
-
-        return matches.Count switch
-        {
-            0 => throw new InvalidOperationException($"Column '{columnName}' does not exist."),
-            1 => matches[0],
-            _ => throw new InvalidOperationException($"Column '{columnName}' is ambiguous across joined tables. Use table-qualified names.")
-        };
-    }
-
-    private static bool EvaluateComparison(object? columnValue, ComparisonOp op, object? literalValue)
-    {
-        // Standard SQL NULL semantics: any comparison involving NULL is unknown (treated as false).
-        if (columnValue is null || literalValue is null)
-            return false;
-
-        if (columnValue is byte[] columnBytes)
-        {
-            if (literalValue is not byte[] literalBytes)
-                throw new InvalidOperationException("Cannot compare a blob column with a non-blob value.");
-            var blobEqual = columnBytes.SequenceEqual(literalBytes);
-            return op switch
-            {
-                ComparisonOp.Equals => blobEqual,
-                ComparisonOp.NotEquals => !blobEqual,
-                _ => throw new InvalidOperationException("Blob columns only support = and <> comparisons.")
-            };
-        }
-
-        if (columnValue is not IComparable comparable)
-            throw new InvalidOperationException($"Column value of type '{columnValue.GetType().Name}' does not support comparison.");
-
-        int cmp;
-        try
-        {
-            cmp = comparable.CompareTo(literalValue);
-        }
-        catch (ArgumentException)
-        {
-            throw new InvalidOperationException(
-                $"Cannot compare a value of type '{columnValue.GetType().Name}' with a literal of type '{literalValue.GetType().Name}'.");
-        }
-
-        return op switch
-        {
-            ComparisonOp.Equals => cmp == 0,
-            ComparisonOp.NotEquals => cmp != 0,
-            ComparisonOp.LessThan => cmp < 0,
-            ComparisonOp.GreaterThan => cmp > 0,
-            ComparisonOp.LessThanOrEquals => cmp <= 0,
-            ComparisonOp.GreaterThanOrEquals => cmp >= 0,
-            _ => throw new InvalidOperationException($"Unknown comparison operator {op}.")
-        };
     }
 
     private IReadOnlyList<(TableInfo Table, int Offset)> BuildJoinContext(
@@ -638,7 +551,7 @@ public sealed class QueryEngine : IDisposable
         for (var i = 0; i < columns.Count; i++)
         {
             var col = columns[i];
-            indices[i] = ResolveColumn(col.TableName, col.ColumnName, context);
+            indices[i] = QueryExecutor.ResolveColumn(col.TableName, col.ColumnName, context);
             names[i] = col.TableName is not null
                 ? $"{col.TableName}.{col.ColumnName}"
                 : col.ColumnName;

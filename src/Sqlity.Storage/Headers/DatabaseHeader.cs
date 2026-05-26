@@ -10,7 +10,8 @@ public readonly record struct DatabaseHeader(
     uint RootPageId,
     uint FreeListHeadPageId,
     uint FreePageCount,
-    uint SchemaVersion)
+    uint SchemaVersion,
+    uint IndexCatalogRootPageId)
 {
     public const int Size = 64;
 
@@ -18,11 +19,12 @@ public readonly record struct DatabaseHeader(
         new(
             DbConstants.FormatVersion,
             checked((ushort)DbConstants.PageSize),
-            1,
-            0,
-            0,
-            0,
-            1);
+            PageCount: 1,
+            RootPageId: 0,
+            FreeListHeadPageId: 0,
+            FreePageCount: 0,
+            SchemaVersion: 1,
+            IndexCatalogRootPageId: 0);
 
     public void WriteTo(Span<byte> destination)
     {
@@ -42,6 +44,7 @@ public readonly record struct DatabaseHeader(
         BinaryPrimitives.WriteUInt32LittleEndian(destination[24..28], FreeListHeadPageId);
         BinaryPrimitives.WriteUInt32LittleEndian(destination[28..32], FreePageCount);
         BinaryPrimitives.WriteUInt32LittleEndian(destination[32..36], SchemaVersion);
+        BinaryPrimitives.WriteUInt32LittleEndian(destination[36..40], IndexCatalogRootPageId);
     }
 
     public static DatabaseHeader ReadFrom(ReadOnlySpan<byte> source)
@@ -64,6 +67,9 @@ public readonly record struct DatabaseHeader(
         var freeListHeadPageId = BinaryPrimitives.ReadUInt32LittleEndian(source[24..28]);
         var freePageCount = BinaryPrimitives.ReadUInt32LittleEndian(source[28..32]);
         var schemaVersion = BinaryPrimitives.ReadUInt32LittleEndian(source[32..36]);
+        var indexCatalogRootPageId = formatVersion >= 2
+            ? BinaryPrimitives.ReadUInt32LittleEndian(source[36..40])
+            : 0u;
 
         if (pageSize != DbConstants.PageSize)
         {
@@ -82,6 +88,7 @@ public readonly record struct DatabaseHeader(
             rootPageId,
             freeListHeadPageId,
             freePageCount,
-            schemaVersion);
+            schemaVersion,
+            indexCatalogRootPageId);
     }
 }

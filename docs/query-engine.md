@@ -5,12 +5,13 @@ Sqlity now includes a small executable query layer on top of the storage engine.
 ## Current MVP responsibilities
 
 - tokenize a very small SQL subset
-- parse `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
+- parse `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `CREATE INDEX`, and `CREATE UNIQUE INDEX`
 - bind table and column names against catalog metadata
 - convert SQL literals (including `NULL`) into storage-backed row values
 - execute primary-key lookup, full table iteration, row deletion, and row update
 - evaluate `INNER JOIN` and `LEFT JOIN` with flat column contexts
 - evaluate compound `WHERE` expressions with `AND`/`OR`, all comparison operators, and `IS NULL` / `IS NOT NULL`
+- choose between a secondary-index seek and a full scan based on available indexes and predicate equality coverage
 
 ## Supported SQL surface
 
@@ -41,6 +42,25 @@ Rules:
   they execute in order and the result of the last statement is returned.
 
 See `docs/transactions.md` for crash-recovery invariants and the journal format.
+
+### `CREATE INDEX` / `CREATE UNIQUE INDEX`
+
+Supported shapes:
+
+```sql
+CREATE INDEX idx_users_email ON users (email);
+CREATE UNIQUE INDEX idx_orders_ref ON orders (reference_number);
+CREATE INDEX idx_orders_customer ON orders (customer_id, created_at);
+```
+
+Rules:
+
+- index names must be unique across the database
+- all indexed columns must exist in the target table
+- `CREATE UNIQUE INDEX` rejects duplicate non-null values on insert or update; an existing duplicate does not prevent index creation (uniqueness is only enforced going forward)
+- multi-column indexes are supported from the start; the planner scores leading equality columns and falls back to a full scan for any unmatched suffix
+- indexes are stored in a dedicated index catalog (`__sqlity_indexes`) that persists across reopen
+- index entries are automatically maintained on every `INSERT`, `DELETE`, and `UPDATE`
 
 ### `CREATE TABLE`
 
@@ -101,7 +121,7 @@ Rules:
 - column references may optionally be table-qualified (`users.name`)
 - `WHERE` supports any column, any comparison operator, and compound `AND`/`OR` expressions (see [WHERE expressions](#where-expressions))
 - when no `WHERE` is given, a full table scan is performed
-- primary-key equality filters use a B+ tree point lookup; all other filters fall back to a full scan
+- primary-key equality filters use a B+ tree point lookup; equality predicates on secondary-indexed columns trigger an index seek; all other predicates either become a post-filter or fall back to a full scan (see [Query planner](#query-planner))
 
 ### `INNER JOIN` / `LEFT JOIN`
 
@@ -182,15 +202,44 @@ WHERE name IS NULL
 WHERE score IS NOT NULL
 ```
 
+## Query planner
+
+Single-table `SELECT` queries go through a rule-based logical/physical planner before execution.
+
+### How it works
+
+1. The planner flattens `AND`-connected predicates into a list of atoms.
+2. For each secondary index on the queried table it scores the index by counting how many leading columns are covered by equality predicates.
+3. The index with the highest score is chosen. If no index scores above zero, a full scan is used.
+4. An **index seek** builds a sort-preserving prefix key from the matching predicates and calls `SecondaryBPlusTree.RangeSeek`. Remaining (unmatched) predicates become a **post-filter** applied to each fetched row.
+5. A **full scan** reads all rows and evaluates all predicates in memory.
+
+### Example
+
+```sql
+CREATE INDEX idx_customer ON orders (customer_id);
+
+-- Both predicates visible to planner.
+-- customer_id = 42 matches the index (score = 1).
+-- status = 'open' has no index match → becomes post-filter.
+SELECT id FROM orders WHERE customer_id = 42 AND status = 'open';
+```
+
+### Current limitations
+
+- only **equality** predicates score index coverage; range predicates (`<`, `>`, `<=`, `>=`) do not contribute to the leading-column score (they always become a post-filter or trigger a full scan)
+- `JOIN` queries always use full scans on each side; the planner only optimises single-table paths
+- if multiple indexes tie on score, the first one returned by the catalog wins
+
 ## Deliberate limitations
 
 - no grouping, ordering, or aggregates
-- no `ALTER TABLE`
+- no `ALTER TABLE` or `DROP INDEX`
 - no table constraints beyond the inline primary key and `NOT NULL`
-- no query planner: execution maps almost directly to storage operations
+- range predicates on secondary indexes fall back to a full scan (equality-only planner for now)
 - single active transaction per engine instance; nested transactions are not supported
 
-These constraints are intentional. The goal of this milestone is to connect SQL text to the persisted catalog and row/page storage without hiding the mechanics behind a large abstraction layer.
+These constraints are intentional. The goal of the current milestone is to connect SQL text to the persisted catalog and row/page storage, and demonstrate a working index path, without hiding the mechanics behind a large abstraction layer.
 
 ## First user-owned database workflow
 

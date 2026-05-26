@@ -11,7 +11,7 @@ Sqlity is an educational SQLite-like embedded database engine written in C# for 
 
 ## Current milestone
 
-The repository now contains a storage engine, an executable SQL layer, a complete ADO.NET provider, and full transaction support with crash recovery:
+The repository now contains a storage engine, an executable SQL layer, secondary index support with a rule-based query planner, a complete ADO.NET provider, and full transaction support with crash recovery:
 
 - a single-file database format
 - a fixed 4096-byte page model
@@ -22,9 +22,14 @@ The repository now contains a storage engine, an executable SQL layer, a complet
 - single-page table storage with ordered primary-key insertion
 - slotted-page compaction on delete (correct pointer array and cell content compaction)
 - in-place and resize-safe row updates
-- SQL execution for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
+- SQL execution for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `CREATE INDEX`, and `CREATE UNIQUE INDEX`
 - nullable columns (`NOT NULL` constraint), `NULL` literals, and `IS NULL` / `IS NOT NULL` in `WHERE`
 - `INNER JOIN` and `LEFT JOIN` with compound `WHERE` expressions
+- secondary B+ trees with sort-preserving key encoding for all column types
+- persisted index catalog (`__sqlity_indexes`) that survives reopen
+- automatic index maintenance on `INSERT`, `DELETE`, and `UPDATE`
+- rule-based logical/physical query planner: equality predicates on indexed columns produce an index seek; unmatched predicates become a post-filter
+- `CREATE [UNIQUE] INDEX` with duplicate-key enforcement on unique indexes
 - full ADO.NET provider: `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`
 - `BEGIN` / `BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK` transaction boundaries
 - rollback journal: every write is journaled before it happens; a stale journal on reopen triggers automatic crash recovery
@@ -176,8 +181,8 @@ engine.Execute("DELETE FROM users WHERE id = 2;");
 
 Current limits to keep in mind:
 
-- supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `BEGIN` / `BEGIN TRANSACTION`, `COMMIT`, and `ROLLBACK`; multiple statements can be batched in a single call
-- `WHERE` supports any column with full `AND`/`OR` composition and `IS NULL` / `IS NOT NULL`; primary-key equality uses a B+ tree point lookup, all other filters fall back to a full scan
+- supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `CREATE INDEX`, `CREATE UNIQUE INDEX`, `BEGIN` / `BEGIN TRANSACTION`, `COMMIT`, and `ROLLBACK`; multiple statements can be batched in a single call
+- `WHERE` supports any column with full `AND`/`OR` composition and `IS NULL` / `IS NOT NULL`; equality predicates on indexed columns use a secondary B+ tree seek; primary-key equality uses a primary B+ tree point lookup; unmatched predicates apply as a post-filter
 - no aggregates, no `ORDER BY`, no subqueries
 
 That file path is the database. If `my-db.sqlity` does not exist, Sqlity creates it; if it exists, Sqlity reopens it.

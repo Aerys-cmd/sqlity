@@ -12,6 +12,7 @@ public sealed class StorageEngine : IDisposable
     private readonly IPager _pager;
     private readonly bool _ownsPager;
     private readonly CatalogStore _catalog;
+    private IndexCatalogStore? _indexCatalog;
     private readonly RowSerializer _rowSerializer = new();
 
     public StorageEngine(IPager pager)
@@ -26,6 +27,10 @@ public sealed class StorageEngine : IDisposable
         _pager = pager;
         _ownsPager = ownsPager;
         _catalog = new CatalogStore(_pager, EnsureCatalogRootPage());
+
+        var indexRootPageId = _pager.ReadDatabaseHeader().IndexCatalogRootPageId;
+        if (indexRootPageId != 0)
+            _indexCatalog = new IndexCatalogStore(_pager, indexRootPageId);
     }
 
     public static StorageEngine Open(string filePath)
@@ -46,6 +51,14 @@ public sealed class StorageEngine : IDisposable
     }
 
     public IReadOnlyList<TableInfo> ListTables() => _catalog.ReadTables();
+
+    public IReadOnlyList<IndexInfo> ListIndexes() => _indexCatalog?.ReadAll() ?? [];
+
+    public IReadOnlyList<IndexInfo> GetIndexesForTable(string tableName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+        return _indexCatalog?.GetByTable(tableName) ?? [];
+    }
 
     public bool InTransaction => _pager.InTransaction;
 
@@ -83,6 +96,58 @@ public sealed class StorageEngine : IDisposable
         return table!;
     }
 
+    /// <summary>
+    /// Creates a secondary index and back-fills it with any existing rows in the table.
+    /// </summary>
+    public IndexInfo CreateIndex(string indexName, string tableName, IReadOnlyList<string> columns, bool isUnique)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+        ArgumentNullException.ThrowIfNull(columns);
+
+        if (columns.Count == 0)
+            throw new InvalidOperationException("CREATE INDEX requires at least one column.");
+
+        var table = GetTable(tableName);
+        foreach (var col in columns)
+        {
+            if (!table.Schema.TryGetColumnOrdinal(col, out _))
+                throw new InvalidOperationException($"Column '{col}' does not exist in table '{tableName}'.");
+        }
+
+        var indexCatalog = EnsureIndexCatalog();
+        if (indexCatalog.TryGetByName(indexName, out _))
+            throw new InvalidOperationException($"Index '{indexName}' already exists.");
+
+        var rootPageId = _pager.AllocatePage(PageType.IndexLeaf);
+        var status = indexCatalog.TryInsert(indexName, tableName, rootPageId, columns, isUnique, out var index);
+
+        if (status == IndexCatalogInsertStatus.CatalogFull)
+        {
+            _pager.ReleasePage(rootPageId);
+            throw new InvalidOperationException("The index catalog page is full.");
+        }
+
+        if (status == IndexCatalogInsertStatus.DuplicateIndexName)
+        {
+            _pager.ReleasePage(rootPageId);
+            throw new InvalidOperationException($"Index '{indexName}' already exists.");
+        }
+
+        // Back-fill existing rows.
+        var columnOrdinals = columns.Select(c => table.Schema.GetColumnOrdinal(c)).ToList();
+        var tree = new SecondaryBPlusTree(_pager, rootPageId);
+
+        foreach (var cell in new BPlusTree(_pager, table.RootPageId).ReadAll())
+        {
+            var rowValues = _rowSerializer.Read(table.Schema, cell.Payload);
+            InsertIndexEntry(tree, table.Schema.Columns, columnOrdinals, rowValues, cell.PrimaryKey, isUnique);
+        }
+
+        IncrementSchemaVersion();
+        return index!;
+    }
+
     public TableInfo GetTable(string tableName)
     {
         if (!_catalog.TryGetByName(tableName, out var table))
@@ -110,6 +175,19 @@ public sealed class StorageEngine : IDisposable
             throw new InvalidOperationException(
                 $"Table '{tableName}' already contains a row with primary key {primaryKey}.", ex);
         }
+
+        // Maintain secondary indexes.
+        var indexes = GetIndexesForTable(tableName);
+        if (indexes.Count > 0)
+        {
+            var rowValues = values.ToArray();
+            foreach (var index in indexes)
+            {
+                var columnOrdinals = index.Columns.Select(c => table.Schema.GetColumnOrdinal(c)).ToList();
+                var tree = new SecondaryBPlusTree(_pager, index.RootPageId);
+                InsertIndexEntry(tree, table.Schema.Columns, columnOrdinals, rowValues, primaryKey, index.IsUnique);
+            }
+        }
     }
 
     public void Delete(string tableName, long primaryKey)
@@ -117,6 +195,18 @@ public sealed class StorageEngine : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
 
         var table = GetTable(tableName);
+
+        // Remove index entries before deleting the row so we can still read its values.
+        var indexes = GetIndexesForTable(tableName);
+        if (indexes.Count > 0 && TryReadByPrimaryKey(tableName, primaryKey, out var existingValues) && existingValues is not null)
+        {
+            foreach (var index in indexes)
+            {
+                var columnOrdinals = index.Columns.Select(c => table.Schema.GetColumnOrdinal(c)).ToList();
+                var tree = new SecondaryBPlusTree(_pager, index.RootPageId);
+                DeleteIndexEntry(tree, table.Schema.Columns, columnOrdinals, existingValues, primaryKey, index.IsUnique);
+            }
+        }
 
         try
         {
@@ -134,6 +224,13 @@ public sealed class StorageEngine : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
 
         var table = GetTable(tableName);
+        var indexes = GetIndexesForTable(tableName);
+
+        // Read old values before update so we can remove stale index entries.
+        object?[]? oldValues = null;
+        if (indexes.Count > 0)
+            TryReadByPrimaryKey(tableName, primaryKey, out oldValues);
+
         var payload = SerializeRow(table.Schema, newValues);
 
         try
@@ -144,6 +241,19 @@ public sealed class StorageEngine : IDisposable
         {
             throw new InvalidOperationException(
                 $"Table '{tableName}' does not contain a row with primary key {primaryKey}.", ex);
+        }
+
+        // Maintain secondary indexes.
+        if (indexes.Count > 0 && oldValues is not null)
+        {
+            var newValuesArray = newValues.ToArray();
+            foreach (var index in indexes)
+            {
+                var columnOrdinals = index.Columns.Select(c => table.Schema.GetColumnOrdinal(c)).ToList();
+                var tree = new SecondaryBPlusTree(_pager, index.RootPageId);
+                DeleteIndexEntry(tree, table.Schema.Columns, columnOrdinals, oldValues, primaryKey, index.IsUnique);
+                InsertIndexEntry(tree, table.Schema.Columns, columnOrdinals, newValuesArray, primaryKey, index.IsUnique);
+            }
         }
     }
 
@@ -175,6 +285,19 @@ public sealed class StorageEngine : IDisposable
         return rows;
     }
 
+    /// <summary>
+    /// Returns primary keys of rows that satisfy <paramref name="range"/> on <paramref name="index"/>.
+    /// </summary>
+    public IReadOnlyList<long> SeekByIndex(IndexInfo index, IndexSeekRange range)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+        ArgumentNullException.ThrowIfNull(range);
+
+        var tree = new SecondaryBPlusTree(_pager, index.RootPageId);
+        var entries = tree.RangeSeek(range);
+        return entries.Select(e => e.PrimaryKey).ToList();
+    }
+
     public void Dispose()
     {
         if (_ownsPager)
@@ -195,6 +318,48 @@ public sealed class StorageEngine : IDisposable
         header = _pager.ReadDatabaseHeader();
         _pager.WriteDatabaseHeader(header with { RootPageId = catalogRootPageId });
         return catalogRootPageId;
+    }
+
+    private IndexCatalogStore EnsureIndexCatalog()
+    {
+        if (_indexCatalog is not null)
+            return _indexCatalog;
+
+        var rootPageId = _pager.AllocatePage(PageType.TableLeaf);
+        var header = _pager.ReadDatabaseHeader();
+        _pager.WriteDatabaseHeader(header with { IndexCatalogRootPageId = rootPageId });
+        _indexCatalog = new IndexCatalogStore(_pager, rootPageId);
+        return _indexCatalog;
+    }
+
+    private static void InsertIndexEntry(
+        SecondaryBPlusTree tree,
+        IReadOnlyList<ColumnDefinition> columns,
+        IReadOnlyList<int> columnOrdinals,
+        object?[] rowValues,
+        long primaryKey,
+        bool isUnique)
+    {
+        var key = isUnique
+            ? IndexKeyEncoder.Encode(columns, columnOrdinals, rowValues)
+            : IndexKeyEncoder.Encode(columns, columnOrdinals, rowValues, primaryKey);
+
+        tree.Insert(key, primaryKey, isUnique);
+    }
+
+    private static void DeleteIndexEntry(
+        SecondaryBPlusTree tree,
+        IReadOnlyList<ColumnDefinition> columns,
+        IReadOnlyList<int> columnOrdinals,
+        object?[] rowValues,
+        long primaryKey,
+        bool isUnique)
+    {
+        var key = isUnique
+            ? IndexKeyEncoder.Encode(columns, columnOrdinals, rowValues)
+            : IndexKeyEncoder.Encode(columns, columnOrdinals, rowValues, primaryKey);
+
+        tree.Delete(key);
     }
 
     private byte[] SerializeRow(TableSchema schema, IReadOnlyList<object?> values)

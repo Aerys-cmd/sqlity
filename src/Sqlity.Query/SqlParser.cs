@@ -17,7 +17,7 @@ internal sealed class SqlParser
     {
         SqlStatement statement = Peek().Kind switch
         {
-            SqlTokenKind.Create => ParseCreateTable(),
+            SqlTokenKind.Create => ParseCreate(),
             SqlTokenKind.Insert => ParseInsert(),
             SqlTokenKind.Select => ParseSelect(),
             SqlTokenKind.Update => ParseUpdate(),
@@ -42,7 +42,7 @@ internal sealed class SqlParser
         {
             SqlStatement statement = Peek().Kind switch
             {
-                SqlTokenKind.Create => ParseCreateTable(),
+                SqlTokenKind.Create => ParseCreate(),
                 SqlTokenKind.Insert => ParseInsert(),
                 SqlTokenKind.Select => ParseSelect(),
                 SqlTokenKind.Update => ParseUpdate(),
@@ -80,6 +80,15 @@ internal sealed class SqlParser
         return new RollbackStatement();
     }
 
+    private SqlStatement ParseCreate()
+    {
+        // Dispatch on the token after CREATE: TABLE | [UNIQUE] INDEX
+        var next = PeekAhead(1);
+        if (next.Kind == SqlTokenKind.Unique || next.Kind == SqlTokenKind.Index)
+            return ParseCreateIndex();
+        return ParseCreateTable();
+    }
+
     private CreateTableStatement ParseCreateTable()
     {
         Expect(SqlTokenKind.Create);
@@ -113,6 +122,27 @@ internal sealed class SqlParser
 
         Expect(SqlTokenKind.CloseParen);
         return new CreateTableStatement(tableName, columns);
+    }
+
+    private CreateIndexStatement ParseCreateIndex()
+    {
+        Expect(SqlTokenKind.Create);
+        var isUnique = Match(SqlTokenKind.Unique);
+        Expect(SqlTokenKind.Index);
+        var indexName = ExpectIdentifier("Expected an index name after CREATE INDEX.");
+        Expect(SqlTokenKind.On);
+        var tableName = ExpectIdentifier("Expected a table name after ON.");
+        Expect(SqlTokenKind.OpenParen);
+
+        var indexColumns = new List<string>();
+        do
+        {
+            indexColumns.Add(ExpectIdentifier("Expected a column name in the index column list."));
+        }
+        while (Match(SqlTokenKind.Comma));
+
+        Expect(SqlTokenKind.CloseParen);
+        return new CreateIndexStatement(indexName, isUnique, tableName, indexColumns);
     }
 
     private InsertStatement ParseInsert()
@@ -386,6 +416,9 @@ internal sealed class SqlParser
 
     private SqlToken Peek() => _tokens[_position];
 
+    private SqlToken PeekAhead(int offset) =>
+        _position + offset < _tokens.Count ? _tokens[_position + offset] : _tokens[^1];
+
     private SqlToken Advance()
     {
         var token = Peek();
@@ -397,6 +430,8 @@ internal sealed class SqlParser
 internal abstract record SqlStatement;
 
 internal sealed record CreateTableStatement(string TableName, IReadOnlyList<ColumnSpecification> Columns) : SqlStatement;
+
+internal sealed record CreateIndexStatement(string IndexName, bool IsUnique, string TableName, IReadOnlyList<string> Columns) : SqlStatement;
 
 internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<SqlLiteral> Values) : SqlStatement;
 

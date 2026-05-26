@@ -44,14 +44,14 @@ The database header is file-wide metadata that tells the engine how to interpret
 - A richer header makes bootstrapping easier but couples more metadata to a single location.
 - A minimal header is simpler but pushes more discovery work elsewhere.
 
-### Initial Sqlity header format
+### Initial Sqlity header format (version 2)
 
 All values are little-endian.
 
 | Offset | Size | Field |
 | --- | ---: | --- |
 | 0 | 8 | Magic `"SQLITYDB"` |
-| 8 | 4 | Format version |
+| 8 | 4 | Format version (2 as of secondary-index support) |
 | 12 | 2 | Page size |
 | 14 | 2 | Header size |
 | 16 | 4 | Page count |
@@ -59,9 +59,12 @@ All values are little-endian.
 | 24 | 4 | Free-list head page id |
 | 28 | 4 | Free page count |
 | 32 | 4 | Schema version |
-| 36 | 28 | Reserved for future metadata |
+| 36 | 4 | Index catalog root page id (0 = no indexes yet) |
+| 40 | 24 | Reserved for future metadata |
 
-The header fits in the first 64 bytes of page `0`. The rest of page `0` is currently unused and reserved for future metadata.
+The header fits in the first 64 bytes of page `0`. The rest of page `0` is currently unused.
+
+Version 1 files (written before secondary-index support) are still readable; the engine treats `IndexCatalogRootPageId = 0` as "not yet initialized" and lazily creates the catalog page on the first `CREATE INDEX`.
 
 ## 3. Page layout
 
@@ -101,7 +104,7 @@ This is the same family of design used by many real databases because it support
 | 16 | 2 | Fragmented free bytes |
 | 18 | 2 | Reserved |
 
-Page type distinguishes table leaf, table internal, free-list, and overflow pages. `SpecialPageId` is intentionally generic so later iterations can use it as a right-sibling pointer or another page-specific link without redesigning the base header.
+Page type distinguishes table leaf, table internal, index leaf (`IndexLeaf = 5`), index internal (`IndexInternal = 6`), free-list, and overflow pages. `SpecialPageId` is intentionally generic so later iterations can use it as a right-sibling pointer or another page-specific link without redesigning the base header.
 
 ## 4. Row serialization
 
@@ -241,6 +244,9 @@ Key design decisions:
 - `TableInfo`: persisted table metadata surface
 - `TableSchemaSerializer`: schema blob codec used by the system catalog
 - `CatalogStore`: system catalog reader/writer over a table leaf page
+- `IndexInfo`: secondary index metadata record (name, table, root page id, column list, uniqueness flag)
+- `IndexMetadataSerializer`: binary codec for the index metadata blob stored in `__sqlity_indexes`
+- `IndexCatalogStore`: single-page index catalog — `ReadAll`, `TryGetByName`, `TryInsert`
 
 ### `Sqlity.Storage.BTree`
 
@@ -250,6 +256,13 @@ Key design decisions:
 - `TableInternalInsertStatus`: enum for insert outcomes (`Success`, `DuplicateKey`, `PageFull`)
 - `TableInternalPage`: slotted-page internal B-tree node with binary-search child routing
 - `BPlusTree`: full B+ tree implementation — root-to-leaf traversal, leaf split, internal split, root promotion, and all five DML operations
+- `IndexKeyEncoder`: sort-preserving `byte[]` encoding for all `ColumnType` values; supports multi-column keys; full-row semantics (`rowValues[ordinal]`)
+- `IndexSeekRange`: seek range descriptor — `Equality`, `PrefixEquality`, `Bounded`, and open-ended variants
+- `IndexLeafCell`: variable-length key + `Int64` primary-key payload for secondary index leaves
+- `IndexLeafPage`: slotted-page operations for index leaf pages (`Insert`, `Delete`, `TryGet`, `ReadAllCells`)
+- `IndexInternalCell`: variable-length key + `uint` child page id for secondary index internal pages
+- `IndexInternalPage`: secondary index internal page with `byte[]` key routing
+- `SecondaryBPlusTree`: full B+ tree over `byte[]` keys — `Insert` (with unique-key enforcement), `Delete`, `TryGet`, `RangeSeek`
 
 ### `Sqlity.Storage.IO`
 
@@ -279,6 +292,17 @@ Key design decisions:
   - serialized `TableSchema`
 
 Using a normal table leaf page here keeps metadata on the same storage path as user data and avoids inventing a second persistence format for the MVP.
+
+### Index catalog page
+
+- stored as a single normal table leaf page (same slotted-page format)
+- `DatabaseHeader.IndexCatalogRootPageId` points to it; `0` means the catalog has not been created yet
+- one row per secondary index, with the following logical fields:
+  - `index_id INT64` — primary key, auto-increment
+  - `index_name STRING` — unique name provided in `CREATE INDEX`
+  - `table_name STRING` — target table
+  - `root_page_id INT64` — root page of the secondary B+ tree
+  - `metadata_blob BLOB` — encodes `isUnique`, column count, and column names (see `IndexMetadataSerializer`)
 
 ### Table internal pages
 
@@ -336,6 +360,7 @@ Current limitations:
 6. **B-tree navigation**: root-to-leaf traversal, leaf-page splits, internal-page splits, and root promotion. Tables now grow across as many pages as needed with no catalog update required on splits. ✅ Implemented.
 7. **Provider integration**: ADO.NET surface once multi-page query execution is stable.
 8. **Advanced durability**: transactions, rollback/WAL, and crash-recovery experiments.
+9. **Secondary indexes and query planning**: sort-preserving key encoding, secondary B+ trees, persisted index catalog, automatic index maintenance on all DML operations, rule-based query planner. ✅ Implemented.
 
 ## 11. Writable table leaf page behavior
 
