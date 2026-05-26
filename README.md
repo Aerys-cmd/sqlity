@@ -11,7 +11,7 @@ Sqlity is an educational SQLite-like embedded database engine written in C# for 
 
 ## Current milestone
 
-The repository now contains a storage engine, an executable SQL layer, and a complete ADO.NET provider:
+The repository now contains a storage engine, an executable SQL layer, a complete ADO.NET provider, and full transaction support with crash recovery:
 
 - a single-file database format
 - a fixed 4096-byte page model
@@ -26,6 +26,9 @@ The repository now contains a storage engine, an executable SQL layer, and a com
 - nullable columns (`NOT NULL` constraint), `NULL` literals, and `IS NULL` / `IS NOT NULL` in `WHERE`
 - `INNER JOIN` and `LEFT JOIN` with compound `WHERE` expressions
 - full ADO.NET provider: `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`
+- `BEGIN` / `COMMIT` / `ROLLBACK` transaction boundaries
+- rollback journal: every write is journaled before it happens; a stale journal on reopen triggers automatic crash recovery
+- auto-commit for statements executed outside an explicit `BEGIN`
 - storage, query, CLI, and ADO.NET test coverage
 
 ## Repository layout
@@ -89,6 +92,7 @@ Sqlity uses:
 - `docs/storage-engine.md` explains the page model, on-disk layout, and roadmap in detail.
 - `docs/query-engine.md` explains the current SQL surface and its deliberate MVP limits.
 - `docs/ado-provider.md` explains the ADO.NET provider API and how it wraps the query engine.
+- `docs/transactions.md` explains the rollback journal, crash-recovery invariants, and transaction usage.
 - `docs/next-roadmap.md` captures the next concrete milestones.
 
 ## Creating your own database
@@ -171,7 +175,7 @@ engine.Execute("DELETE FROM users WHERE id = 2;");
 
 Current limits to keep in mind:
 
-- supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
+- supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `BEGIN`, `COMMIT`, and `ROLLBACK`
 - `WHERE` supports any column with full `AND`/`OR` composition and `IS NULL` / `IS NOT NULL`; primary-key equality uses a B+ tree point lookup, all other filters fall back to a full scan
 - no aggregates, no `ORDER BY`, no subqueries
 

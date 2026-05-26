@@ -10,6 +10,7 @@ public sealed class SqlityConnection : DbConnection
     private string _connectionString = string.Empty;
     private ConnectionState _state = ConnectionState.Closed;
     private QueryEngine? _engine;
+    private SqlityTransaction? _activeTransaction;
 
     public SqlityConnection() { }
 
@@ -48,6 +49,13 @@ public sealed class SqlityConnection : DbConnection
 
     public override void Close()
     {
+        // Roll back any active transaction before closing so the database file is left consistent.
+        if (_activeTransaction is not null && _engine is not null && _engine.InTransaction)
+        {
+            try { _engine.Rollback(); } catch { /* best effort */ }
+        }
+
+        _activeTransaction = null;
         _engine?.Dispose();
         _engine = null;
         _state = ConnectionState.Closed;
@@ -59,8 +67,17 @@ public sealed class SqlityConnection : DbConnection
     protected override DbCommand CreateDbCommand() =>
         new SqlityCommand(string.Empty, this);
 
-    protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) =>
-        new SqlityTransaction(this);
+    protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
+    {
+        if (_activeTransaction is not null)
+            throw new InvalidOperationException("A transaction is already active on this connection.");
+
+        Engine.BeginTransaction();
+        _activeTransaction = new SqlityTransaction(this);
+        return _activeTransaction;
+    }
+
+    internal void ClearActiveTransaction() => _activeTransaction = null;
 
     protected override void Dispose(bool disposing)
     {

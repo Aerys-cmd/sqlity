@@ -27,18 +27,42 @@ public sealed class QueryEngine : IDisposable
         _ownsStorage = ownsStorage;
     }
 
+    public bool InTransaction => _storage.InTransaction;
+
+    public void BeginTransaction()
+    {
+        if (_storage.InTransaction)
+            throw new InvalidOperationException("A transaction is already active. Nested transactions are not supported.");
+
+        _storage.BeginTransaction();
+    }
+
+    public void Commit()
+    {
+        if (!_storage.InTransaction)
+            throw new InvalidOperationException("No active transaction to commit.");
+
+        _storage.Commit();
+    }
+
+    public void Rollback()
+    {
+        if (!_storage.InTransaction)
+            throw new InvalidOperationException("No active transaction to roll back.");
+
+        _storage.Rollback();
+    }
+
     public QueryExecutionResult Execute(string sql)
     {
         var statement = new SqlParser(sql).ParseStatement();
 
         return statement switch
         {
-            CreateTableStatement createTable => ExecuteCreateTable(createTable),
-            InsertStatement insert => ExecuteInsert(insert),
-            SelectStatement select => ExecuteSelect(select),
-            DeleteStatement delete => ExecuteDelete(delete),
-            UpdateStatement update => ExecuteUpdate(update),
-            _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
+            BeginStatement => ExecuteBegin(),
+            CommitStatement => ExecuteCommit(),
+            RollbackStatement => ExecuteRollback(),
+            _ => ExecuteDml(statement)
         };
     }
 
@@ -46,7 +70,65 @@ public sealed class QueryEngine : IDisposable
     {
         if (_ownsStorage)
         {
+            // Roll back any uncommitted transaction so the database file is left consistent.
+            if (_storage.InTransaction)
+                _storage.Rollback();
+
             _storage.Dispose();
+        }
+    }
+
+    // ── transaction statement execution ─────────────────────────────────────
+
+    private QueryExecutionResult ExecuteBegin()
+    {
+        BeginTransaction();
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteCommit()
+    {
+        Commit();
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteRollback()
+    {
+        Rollback();
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    // ── DML / DDL with auto-commit ───────────────────────────────────────────
+
+    private QueryExecutionResult ExecuteDml(SqlStatement statement)
+    {
+        var autoCommit = !_storage.InTransaction;
+        if (autoCommit)
+            _storage.BeginTransaction();
+
+        try
+        {
+            var result = statement switch
+            {
+                CreateTableStatement createTable => ExecuteCreateTable(createTable),
+                InsertStatement insert => ExecuteInsert(insert),
+                SelectStatement select => ExecuteSelect(select),
+                DeleteStatement delete => ExecuteDelete(delete),
+                UpdateStatement update => ExecuteUpdate(update),
+                _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
+            };
+
+            if (autoCommit)
+                _storage.Commit();
+
+            return result;
+        }
+        catch
+        {
+            if (autoCommit)
+                _storage.Rollback();
+
+            throw;
         }
     }
 

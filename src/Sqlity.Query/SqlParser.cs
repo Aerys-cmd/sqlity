@@ -22,12 +22,33 @@ internal sealed class SqlParser
             SqlTokenKind.Select => ParseSelect(),
             SqlTokenKind.Update => ParseUpdate(),
             SqlTokenKind.Delete => ParseDelete(),
+            SqlTokenKind.Begin => ParseBegin(),
+            SqlTokenKind.Commit => ParseCommit(),
+            SqlTokenKind.Rollback => ParseRollback(),
             _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
         Match(SqlTokenKind.Semicolon);
         Expect(SqlTokenKind.EndOfInput);
         return statement;
+    }
+
+    private BeginStatement ParseBegin()
+    {
+        Expect(SqlTokenKind.Begin);
+        return new BeginStatement();
+    }
+
+    private CommitStatement ParseCommit()
+    {
+        Expect(SqlTokenKind.Commit);
+        return new CommitStatement();
+    }
+
+    private RollbackStatement ParseRollback()
+    {
+        Expect(SqlTokenKind.Rollback);
+        return new RollbackStatement();
     }
 
     private CreateTableStatement ParseCreateTable()

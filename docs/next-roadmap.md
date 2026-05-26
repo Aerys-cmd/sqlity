@@ -13,11 +13,13 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - `NULL` support — nullable columns, `NULL` literals, `NOT NULL` constraints, `IS NULL` / `IS NOT NULL` expressions — **done**
 - page recycling — emptied B+ tree leaf pages are now released back to the free-list via `ReleasePage` — **done**
 
-## 3. Transactions and durability
+## 3. Transactions and durability ✅
 
-- add `BEGIN` / `COMMIT` / `ROLLBACK` transaction boundaries
-- evaluate rollback logging or WAL
-- document crash-recovery invariants once writes span multiple pages
+- `BEGIN` / `COMMIT` / `ROLLBACK` transaction boundaries — **done**
+- rollback journal (page-level journaling before each write; journal deleted on commit) — **done**
+- crash recovery: stale journal on reopen triggers automatic rollback — **done**
+- `SqlityTransaction.Commit()` and `Rollback()` wired to real storage operations — **done**
+- auto-commit for statements executed outside an explicit `BEGIN` — **done**
 
 ## 4. Secondary indexes and query planning
 

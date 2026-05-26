@@ -480,15 +480,32 @@ public sealed class SqlityTransactionTests
     }
 
     [Fact]
-    public void Commit_throws_not_supported()
+    public void Commit_commits_transaction()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlity");
         try
         {
-            using var conn = new SqlityConnection($"Data Source={path}");
-            conn.Open();
-            var tx = conn.BeginTransaction();
-            Assert.Throws<NotSupportedException>(() => tx.Commit());
+            using (var conn = new SqlityConnection($"Data Source={path}"))
+            {
+                conn.Open();
+                using var tx = conn.BeginTransaction();
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, v INT64 NOT NULL);";
+                    cmd.ExecuteNonQuery();
+                    cmd.CommandText = "INSERT INTO t VALUES (1, 99);";
+                    cmd.ExecuteNonQuery();
+                }
+                tx.Commit();
+            }
+
+            // Re-open to verify durability
+            using var conn2 = new SqlityConnection($"Data Source={path}");
+            conn2.Open();
+            using var cmd2 = conn2.CreateCommand();
+            cmd2.CommandText = "SELECT v FROM t WHERE id = 1;";
+            var result = cmd2.ExecuteScalar();
+            Assert.Equal(99L, result);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

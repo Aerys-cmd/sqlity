@@ -12,4 +12,8 @@ public interface IPager : IDisposable
     void WritePage(PageBuffer page);
     uint AllocatePage(PageType pageType);
     void ReleasePage(uint pageNumber);
+    bool InTransaction { get; }
+    void BeginTransaction();
+    void Commit();
+    void Rollback();
 }

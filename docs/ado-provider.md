@@ -12,7 +12,7 @@ re-implementing any storage or execution logic.
 | `SqlityDataReader` | `DbDataReader` | Iterates rows from a `QueryExecutionResult` |
 | `SqlityParameter` | `DbParameter` | Stub — no parameterised query support yet |
 | `SqlityParameterCollection` | `DbParameterCollection` | Stub — required by `DbCommand` |
-| `SqlityTransaction` | `DbTransaction` | Stub — `Commit`/`Rollback` throw `NotSupportedException` (see Roadmap §3) |
+| `SqlityTransaction` | `DbTransaction` | Rollback-journal-backed transaction; `Commit` and `Rollback` are fully implemented |
 
 ## Connection string
 
@@ -87,6 +87,5 @@ file handle.
 ## Current limitations
 
 - No parameterised queries (`@param` syntax is not parsed by the engine yet).
-- No transaction support — `BeginTransaction()` returns a stub that throws on `Commit`/`Rollback`.
 - `GetFieldType` falls back to inspecting the first row's CLR value type; it returns
   `typeof(object)` for empty result sets.

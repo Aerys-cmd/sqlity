@@ -14,6 +14,28 @@ Sqlity now includes a small executable query layer on top of the storage engine.
 
 ## Supported SQL surface
 
+### Transaction control
+
+```sql
+BEGIN;
+INSERT INTO orders VALUES (1, 'Widget', 49);
+INSERT INTO orders VALUES (2, 'Gadget', 99);
+COMMIT;
+
+BEGIN;
+DELETE FROM orders WHERE id = 2;
+ROLLBACK;
+```
+
+Rules:
+
+- `BEGIN` opens a transaction. Nesting a second `BEGIN` throws.
+- `COMMIT` persists all changes made since `BEGIN` and closes the transaction.
+- `ROLLBACK` discards all changes made since `BEGIN` and closes the transaction.
+- Any DML/DDL executed outside an explicit `BEGIN` auto-commits as a single-statement transaction.
+
+See `docs/transactions.md` for crash-recovery invariants and the journal format.
+
 ### `CREATE TABLE`
 
 Supported shape:
@@ -160,6 +182,7 @@ WHERE score IS NOT NULL
 - no `ALTER TABLE`
 - no table constraints beyond the inline primary key and `NOT NULL`
 - no query planner: execution maps almost directly to storage operations
+- single active transaction per engine instance; nested transactions are not supported
 
 These constraints are intentional. The goal of this milestone is to connect SQL text to the persisted catalog and row/page storage without hiding the mechanics behind a large abstraction layer.
 

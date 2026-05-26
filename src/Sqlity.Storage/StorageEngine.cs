@@ -37,11 +37,23 @@ public sealed class StorageEngine : IDisposable
         {
             pager.InitializeNew();
         }
+        else
+        {
+            pager.RecoverIfNeeded();
+        }
 
         return new StorageEngine(pager, ownsPager: true);
     }
 
     public IReadOnlyList<TableInfo> ListTables() => _catalog.ReadTables();
+
+    public bool InTransaction => _pager.InTransaction;
+
+    public void BeginTransaction() => _pager.BeginTransaction();
+
+    public void Commit() => _pager.Commit();
+
+    public void Rollback() => _pager.Rollback();
 
     public TableInfo CreateTable(TableSchema schema)
     {

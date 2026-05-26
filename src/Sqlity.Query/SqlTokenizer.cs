@@ -116,6 +116,9 @@ internal static class SqlTokenizer
             "NULL" => SqlTokenKind.Null,
             "IS" => SqlTokenKind.Is,
             "NOT" => SqlTokenKind.Not,
+            "BEGIN" => SqlTokenKind.Begin,
+            "COMMIT" => SqlTokenKind.Commit,
+            "ROLLBACK" => SqlTokenKind.Rollback,
             _ => SqlTokenKind.Identifier
         };
 
@@ -240,5 +243,8 @@ internal enum SqlTokenKind
     Dot = 37,
     Null = 38,
     Is = 39,
-    Not = 40
+    Not = 40,
+    Begin = 41,
+    Commit = 42,
+    Rollback = 43
 }

@@ -119,6 +119,13 @@ internal sealed class InMemoryPager : IPager
 
     public void Dispose() { }
 
+    // Transactions are no-ops for the in-memory pager — all writes are already in memory and
+    // crash recovery is not applicable. The interface contract is satisfied structurally.
+    public bool InTransaction => false;
+    public void BeginTransaction() { }
+    public void Commit() { }
+    public void Rollback() { }
+
     private void EnsureInitialized()
     {
         if (!_initialized)
