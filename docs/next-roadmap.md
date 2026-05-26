@@ -1,41 +1,46 @@
 # Next roadmap
 
-The current milestone connected persisted storage to executable SQL. The next steps should deepen correctness and widen the public surface without skipping the core database mechanics.
+The storage and core query layer is in place: B+ tree with multi-page support, full CRUD, compound `WHERE`, and `JOIN`. The next steps close correctness gaps, widen the SQL surface, and wire up the public provider APIs.
 
-## 1. ~~Multi-page table navigation~~ ✅ Done
-
-- ~~add root-to-leaf search instead of assuming one leaf page per table~~ ✅ root-to-leaf traversal with ancestor stack implemented in `BPlusTree`
-- ~~implement leaf-page split behavior~~ ✅ leaf split (byte-size-based) + internal split + root promotion implemented
-- ~~update `StorageEngine` and query execution so inserts can grow past a single page~~ ✅ all five DML operations delegate to `BPlusTree`
-
-## 2. ~~Delete and page maintenance~~ ✅ Done
-
-- ~~add row delete support~~ ✅ `DELETE FROM table WHERE pk = value` fully implemented
-- ~~compact fragmented table leaf pages~~ ✅ `TryDelete` performs correct slotted-page compaction
-- recycle emptied pages through the existing free-list path (page-level reclaim still pending)
-
-## 3. ADO.NET provider MVP
+## 1. ADO.NET provider
 
 - expose `DbConnection`, `DbCommand`, and `DbDataReader`
 - adapt the existing `QueryEngine` result model instead of duplicating execution logic
 - surface table metadata and column ordinals through provider-friendly APIs
 
-## 4. Better query semantics
+## 2. Correctness gaps
 
-- ~~extend `WHERE` beyond primary-key equality~~ ✅ All comparison operators (`=`, `<>`, `<`, `>`, `<=`, `>=`), `AND`/`OR` compound conditions with parentheses, and multi-row `DELETE`/`UPDATE` fully implemented
-- ~~add `UPDATE` and `DELETE`~~ ✅ Both fully implemented
-- ~~introduce JOIN support~~ ✅ `INNER JOIN` and `LEFT JOIN` with `ON t.col = t.col` implemented; multi-join supported; ambiguous column detection
-- introduce a simple logical/physical execution split once more than one access path exists
+- add `NULL` support — `INSERT` currently requires all columns; `NULL` literals and nullable columns are not parsed or stored
+- recycle emptied pages through the existing free-list path (page-level reclaim still pending after `DELETE`)
 
-## 5. Durability experiments
+## 3. Transactions and durability
 
-- add transaction boundaries
+- add `BEGIN` / `COMMIT` / `ROLLBACK` transaction boundaries
 - evaluate rollback logging or WAL
 - document crash-recovery invariants once writes span multiple pages
 
-## 6. First user-owned database workflow
+## 4. Secondary indexes and query planning
 
-- document the minimal `QueryEngine(filePath)` path so a caller can create or reopen a `.sqlity` file
-- add a tiny sample app or CLI that accepts SQL text and prints result rows
-- keep the first runnable workflow focused on `CREATE TABLE`, `INSERT`, and `SELECT`
-- make current limits explicit: ~~single-page tables and~~ `WHERE` only on the primary key
+- parse and store `CREATE INDEX` in the catalog
+- build a secondary B+ tree per index
+- introduce a logical/physical execution split so the planner can choose between a full scan and an index seek
+
+## 5. Wider SQL surface
+
+- `ORDER BY` (with `ASC` / `DESC`)
+- `LIMIT` / `OFFSET`
+- aggregate functions: `COUNT`, `SUM`, `MIN`, `MAX`, `AVG`
+- `GROUP BY` / `HAVING`
+- scalar subqueries and `IN (subquery)`
+- `DROP TABLE` and `ALTER TABLE`
+- additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME`
+- multi-statement batch execution in a single `Execute` call
+
+## 6. EF Core provider
+
+- implement the EF Core provider once the ADO.NET surface is stable
+
+## 7. Developer workflow
+
+- add a tiny CLI that accepts SQL text and prints result rows
+- document the minimal `QueryEngine(filePath)` path for creating or reopening a `.sqlity` file
