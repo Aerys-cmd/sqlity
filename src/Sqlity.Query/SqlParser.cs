@@ -95,17 +95,17 @@ internal sealed class SqlParser
     {
         Expect(SqlTokenKind.Select);
 
-        IReadOnlyList<string>? columns;
+        IReadOnlyList<ColumnReference>? columns;
         if (Match(SqlTokenKind.Star))
         {
             columns = null;
         }
         else
         {
-            var selectedColumns = new List<string>();
+            var selectedColumns = new List<ColumnReference>();
             do
             {
-                selectedColumns.Add(ExpectIdentifier("Expected a column name in the SELECT list."));
+                selectedColumns.Add(ParseColumnReference("Expected a column name in the SELECT list."));
             }
             while (Match(SqlTokenKind.Comma));
 
@@ -115,15 +115,52 @@ internal sealed class SqlParser
         Expect(SqlTokenKind.From);
         var tableName = ExpectIdentifier("Expected a table name after FROM.");
 
-        PrimaryKeyFilter? filter = null;
-        if (Match(SqlTokenKind.Where))
+        var joins = new List<JoinClause>();
+        while (Peek().Kind is SqlTokenKind.Inner or SqlTokenKind.Left or SqlTokenKind.Join)
         {
-            var columnName = ExpectIdentifier("Expected a column name after WHERE.");
-            Expect(SqlTokenKind.Equals);
-            filter = new PrimaryKeyFilter(columnName, ParseLiteral());
+            joins.Add(ParseJoinClause());
         }
 
-        return new SelectStatement(tableName, columns, filter);
+        WhereExpression? filter = null;
+        if (Match(SqlTokenKind.Where))
+        {
+            filter = ParseWhereExpression();
+        }
+
+        return new SelectStatement(tableName, columns, filter, joins);
+    }
+
+    private JoinClause ParseJoinClause()
+    {
+        JoinType joinType;
+        if (Match(SqlTokenKind.Inner))
+        {
+            Expect(SqlTokenKind.Join);
+            joinType = JoinType.Inner;
+        }
+        else if (Match(SqlTokenKind.Left))
+        {
+            Expect(SqlTokenKind.Join);
+            joinType = JoinType.Left;
+        }
+        else
+        {
+            Expect(SqlTokenKind.Join);
+            joinType = JoinType.Inner;
+        }
+
+        var joinTableName = ExpectIdentifier("Expected a table name after JOIN.");
+        Expect(SqlTokenKind.On);
+
+        var leftTable = ExpectIdentifier("Expected a table name on the left side of the ON condition.");
+        Expect(SqlTokenKind.Dot);
+        var leftColumn = ExpectIdentifier("Expected a column name after '.' on the left side of the ON condition.");
+        Expect(SqlTokenKind.Equals);
+        var rightTable = ExpectIdentifier("Expected a table name on the right side of the ON condition.");
+        Expect(SqlTokenKind.Dot);
+        var rightColumn = ExpectIdentifier("Expected a column name after '.' on the right side of the ON condition.");
+
+        return new JoinClause(joinType, joinTableName, new JoinCondition(leftTable, leftColumn, rightTable, rightColumn));
     }
 
     private UpdateStatement ParseUpdate()
@@ -143,13 +180,11 @@ internal sealed class SqlParser
         while (Match(SqlTokenKind.Comma));
 
         Expect(SqlTokenKind.Where);
-        var filterColumnName = ExpectIdentifier("Expected a column name after WHERE.");
-        Expect(SqlTokenKind.Equals);
-        var filterValue = ParseLiteral();
-        var filter = new PrimaryKeyFilter(filterColumnName, filterValue);
+        var filter = ParseWhereExpression();
 
         return new UpdateStatement(tableName, assignments, filter);
     }
+
     private DeleteStatement ParseDelete()
     {
         Expect(SqlTokenKind.Delete);
@@ -157,12 +192,82 @@ internal sealed class SqlParser
         var tableName = ExpectIdentifier("Expected a table name after DELETE FROM.");
 
         Expect(SqlTokenKind.Where);
-        var columnName = ExpectIdentifier("Expected a column name after WHERE.");
-        Expect(SqlTokenKind.Equals);
-        var filter = new PrimaryKeyFilter(columnName, ParseLiteral());
+        var filter = ParseWhereExpression();
 
         return new DeleteStatement(tableName, filter);
     }
+    private WhereExpression ParseWhereExpression() => ParseOrExpression();
+
+    private WhereExpression ParseOrExpression()
+    {
+        var left = ParseAndExpression();
+        while (Match(SqlTokenKind.Or))
+        {
+            var right = ParseAndExpression();
+            left = new BinaryLogicalExpression(left, LogicalOp.Or, right);
+        }
+        return left;
+    }
+
+    private WhereExpression ParseAndExpression()
+    {
+        var left = ParseWhereAtom();
+        while (Match(SqlTokenKind.And))
+        {
+            var right = ParseWhereAtom();
+            left = new BinaryLogicalExpression(left, LogicalOp.And, right);
+        }
+        return left;
+    }
+
+    private WhereExpression ParseWhereAtom()
+    {
+        if (Match(SqlTokenKind.OpenParen))
+        {
+            var inner = ParseOrExpression();
+            Expect(SqlTokenKind.CloseParen);
+            return inner;
+        }
+
+        string? tableName = null;
+        var columnName = ExpectIdentifier("Expected a column name in the WHERE condition.");
+        if (Match(SqlTokenKind.Dot))
+        {
+            tableName = columnName;
+            columnName = ExpectIdentifier("Expected a column name after '.' in the WHERE condition.");
+        }
+
+        var op = ParseComparisonOp();
+        var value = ParseLiteral();
+        return new ComparisonExpression(tableName, columnName, op, value);
+    }
+
+    private ComparisonOp ParseComparisonOp()
+    {
+        var token = Advance();
+        return token.Kind switch
+        {
+            SqlTokenKind.Equals => ComparisonOp.Equals,
+            SqlTokenKind.NotEquals => ComparisonOp.NotEquals,
+            SqlTokenKind.LessThan => ComparisonOp.LessThan,
+            SqlTokenKind.GreaterThan => ComparisonOp.GreaterThan,
+            SqlTokenKind.LessThanOrEquals => ComparisonOp.LessThanOrEquals,
+            SqlTokenKind.GreaterThanOrEquals => ComparisonOp.GreaterThanOrEquals,
+            _ => throw new InvalidOperationException($"Expected a comparison operator, but found '{token.Lexeme}'.")
+        };
+    }
+
+    private ColumnReference ParseColumnReference(string errorMessage)
+    {
+        var firstName = ExpectIdentifier(errorMessage);
+        if (Match(SqlTokenKind.Dot))
+        {
+            var secondName = ExpectIdentifier("Expected a column name after '.' in the column reference.");
+            return new ColumnReference(firstName, secondName);
+        }
+        return new ColumnReference(null, firstName);
+    }
+
     private SqlLiteral ParseLiteral()
     {
         var token = Advance();
@@ -225,13 +330,34 @@ internal sealed record CreateTableStatement(string TableName, IReadOnlyList<Colu
 
 internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<SqlLiteral> Values) : SqlStatement;
 
-internal sealed record SelectStatement(string TableName, IReadOnlyList<string>? Columns, PrimaryKeyFilter? Filter) : SqlStatement;
+internal sealed record SelectStatement(string TableName, IReadOnlyList<ColumnReference>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins) : SqlStatement;
 
-internal sealed record DeleteStatement(string TableName, PrimaryKeyFilter Filter) : SqlStatement;
-internal sealed record UpdateStatement(string TableName, IReadOnlyList<ColumnAssignment> Assignments, PrimaryKeyFilter Filter) : SqlStatement;
+internal sealed record DeleteStatement(string TableName, WhereExpression Filter) : SqlStatement;
+
+internal sealed record UpdateStatement(string TableName, IReadOnlyList<ColumnAssignment> Assignments, WhereExpression Filter) : SqlStatement;
+
 internal sealed record ColumnAssignment(string ColumnName, SqlLiteral Value);
+
 internal sealed record ColumnSpecification(string Name, string TypeName, bool IsPrimaryKey);
 
-internal sealed record PrimaryKeyFilter(string ColumnName, SqlLiteral Value);
+internal sealed record ColumnReference(string? TableName, string ColumnName);
+
+// JOIN AST
+internal enum JoinType { Inner, Left }
+
+internal sealed record JoinCondition(string LeftTable, string LeftColumn, string RightTable, string RightColumn);
+
+internal sealed record JoinClause(JoinType JoinType, string TableName, JoinCondition Condition);
+
+// WHERE expression tree
+internal abstract record WhereExpression;
+
+internal sealed record ComparisonExpression(string? TableName, string ColumnName, ComparisonOp Op, SqlLiteral Value) : WhereExpression;
+
+internal sealed record BinaryLogicalExpression(WhereExpression Left, LogicalOp Op, WhereExpression Right) : WhereExpression;
+
+internal enum ComparisonOp { Equals, NotEquals, LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals }
+
+internal enum LogicalOp { And, Or }
 
 internal sealed record SqlLiteral(object Value);

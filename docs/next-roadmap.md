@@ -22,8 +22,9 @@ The current milestone connected persisted storage to executable SQL. The next st
 
 ## 4. Better query semantics
 
-- extend `WHERE` beyond primary-key equality
+- ~~extend `WHERE` beyond primary-key equality~~ ✅ All comparison operators (`=`, `<>`, `<`, `>`, `<=`, `>=`), `AND`/`OR` compound conditions with parentheses, and multi-row `DELETE`/`UPDATE` fully implemented
 - ~~add `UPDATE` and `DELETE`~~ ✅ Both fully implemented
+- ~~introduce JOIN support~~ ✅ `INNER JOIN` and `LEFT JOIN` with `ON t.col = t.col` implemented; multi-join supported; ambiguous column detection
 - introduce a simple logical/physical execution split once more than one access path exists
 
 ## 5. Durability experiments

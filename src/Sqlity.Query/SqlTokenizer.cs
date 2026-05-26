@@ -44,6 +44,17 @@ internal static class SqlTokenizer
                 continue;
             }
 
+            if (current is '<' or '>')
+            {
+                var next = index + 1 < sql.Length ? sql[index + 1] : '\0';
+                if (current == '<' && next == '=') { tokens.Add(new SqlToken(SqlTokenKind.LessThanOrEquals, "<=")); index += 2; }
+                else if (current == '<' && next == '>') { tokens.Add(new SqlToken(SqlTokenKind.NotEquals, "<>")); index += 2; }
+                else if (current == '<') { tokens.Add(new SqlToken(SqlTokenKind.LessThan, "<")); index++; }
+                else if (current == '>' && next == '=') { tokens.Add(new SqlToken(SqlTokenKind.GreaterThanOrEquals, ">=")); index += 2; }
+                else { tokens.Add(new SqlToken(SqlTokenKind.GreaterThan, ">")); index++; }
+                continue;
+            }
+
             tokens.Add(current switch
             {
                 '(' => new SqlToken(SqlTokenKind.OpenParen, "("),
@@ -52,6 +63,7 @@ internal static class SqlTokenizer
                 ';' => new SqlToken(SqlTokenKind.Semicolon, ";"),
                 '*' => new SqlToken(SqlTokenKind.Star, "*"),
                 '=' => new SqlToken(SqlTokenKind.Equals, "="),
+                '.' => new SqlToken(SqlTokenKind.Dot, "."),
                 _ => throw new InvalidOperationException($"Unexpected SQL character '{current}'.")
             });
 
@@ -95,6 +107,12 @@ internal static class SqlTokenizer
             "UPDATE" => SqlTokenKind.Update,
             "DELETE" => SqlTokenKind.Delete,
             "SET" => SqlTokenKind.Set,
+            "AND" => SqlTokenKind.And,
+            "OR" => SqlTokenKind.Or,
+            "INNER" => SqlTokenKind.Inner,
+            "LEFT" => SqlTokenKind.Left,
+            "JOIN" => SqlTokenKind.Join,
+            "ON" => SqlTokenKind.On,
             _ => SqlTokenKind.Identifier
         };
 
@@ -204,5 +222,17 @@ internal enum SqlTokenKind
     EndOfInput = 22,
     Update = 23,
     Delete = 24,
-    Set = 25
+    Set = 25,
+    And = 26,
+    Or = 27,
+    LessThan = 28,
+    GreaterThan = 29,
+    LessThanOrEquals = 30,
+    GreaterThanOrEquals = 31,
+    NotEquals = 32,
+    Inner = 33,
+    Left = 34,
+    Join = 35,
+    On = 36,
+    Dot = 37
 }

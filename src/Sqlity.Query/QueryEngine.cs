@@ -95,61 +95,162 @@ public sealed class QueryEngine : IDisposable
 
     private QueryExecutionResult ExecuteSelect(SelectStatement statement)
     {
-        var table = _storage.GetTable(statement.TableName);
-        var selectedOrdinals = BindSelectedColumns(table.Schema, statement.Columns);
-        var rows = statement.Filter is null
-            ? _storage.ReadAll(table.TableName)
-            : ReadFilteredRows(table, statement.Filter);
+        var fromTable = _storage.GetTable(statement.TableName);
 
-        var projectedRows = rows
-            .Select(row => selectedOrdinals.Select(ordinal => row[ordinal]).ToArray())
+        if (statement.Joins.Count == 0)
+        {
+            var selectedOrdinals = BindSingleTableColumns(fromTable.Schema, statement.Columns);
+            var rows = statement.Filter is null
+                ? _storage.ReadAll(statement.TableName)
+                : ReadFilteredRows(fromTable, statement.Filter);
+
+            var projectedRows = rows
+                .Select(row => selectedOrdinals.Select(i => row[i]).ToArray())
+                .ToArray();
+
+            string[] projectedColumns;
+            if (statement.Columns is null)
+            {
+                projectedColumns = selectedOrdinals
+                    .Select(i => fromTable.Schema.Columns[i].Name)
+                    .ToArray();
+            }
+            else
+            {
+                projectedColumns = statement.Columns
+                    .Select(col => col.TableName is not null
+                        ? $"{col.TableName}.{col.ColumnName}"
+                        : col.ColumnName)
+                    .ToArray();
+            }
+
+            return QueryExecutionResult.WithRows(projectedColumns, projectedRows);
+        }
+
+        return ExecuteSelectWithJoins(fromTable, statement);
+    }
+
+    private QueryExecutionResult ExecuteSelectWithJoins(TableInfo fromTable, SelectStatement statement)
+    {
+        var context = BuildJoinContext(fromTable, statement.Joins);
+        var totalCols = context.Sum(e => e.Table.Schema.Columns.Count);
+
+        var currentRows = _storage.ReadAll(fromTable.TableName)
+            .Select(row =>
+            {
+                var combined = new object?[totalCols];
+                Array.Copy(row, combined, row.Length);
+                return combined;
+            })
+            .ToList();
+
+        foreach (var join in statement.Joins)
+        {
+            var joinEntry = context.First(e => string.Equals(e.Table.TableName, join.TableName, StringComparison.OrdinalIgnoreCase));
+            var rightRows = _storage.ReadAll(join.TableName);
+
+            var leftEntry = FindTableEntry(context, join.Condition.LeftTable);
+            var rightEntry = FindTableEntry(context, join.Condition.RightTable);
+            var leftColFlat = leftEntry.Offset + leftEntry.Table.Schema.GetColumnOrdinal(join.Condition.LeftColumn);
+            var rightColFlat = rightEntry.Offset + rightEntry.Table.Schema.GetColumnOrdinal(join.Condition.RightColumn);
+
+            var nextRows = new List<object?[]>();
+            foreach (var leftCombined in currentRows)
+            {
+                var matched = false;
+                foreach (var rightRow in rightRows)
+                {
+                    var candidate = (object?[])leftCombined.Clone();
+                    Array.Copy(rightRow, 0, candidate, joinEntry.Offset, rightRow.Length);
+                    if (ValuesEqual(candidate[leftColFlat], candidate[rightColFlat]))
+                    {
+                        nextRows.Add(candidate);
+                        matched = true;
+                    }
+                }
+
+                if (!matched && join.JoinType == JoinType.Left)
+                {
+                    nextRows.Add(leftCombined);
+                }
+            }
+
+            currentRows = nextRows;
+        }
+
+        IEnumerable<object?[]> filteredRows = currentRows;
+        if (statement.Filter is not null)
+        {
+            filteredRows = currentRows.Where(row => EvaluateWhereInContext(statement.Filter, row, context));
+        }
+
+        var (selectedIndices, outputColumnNames) = BindJoinColumns(statement.Columns, context);
+
+        var projectedRows2 = filteredRows
+            .Select(row => selectedIndices.Select(i => row[i]).ToArray())
             .ToArray();
-        var projectedColumns = selectedOrdinals.Select(ordinal => table.Schema.Columns[ordinal].Name).ToArray();
 
-        return QueryExecutionResult.WithRows(projectedColumns, projectedRows);
+        return QueryExecutionResult.WithRows(outputColumnNames, projectedRows2);
     }
 
     private QueryExecutionResult ExecuteDelete(DeleteStatement statement)
     {
         var table = _storage.GetTable(statement.TableName);
-        var filterOrdinal = table.Schema.GetColumnOrdinal(statement.Filter.ColumnName);
-        if (filterOrdinal != table.Schema.PrimaryKeyOrdinal)
+
+        if (TryExtractPrimaryKeyEquality(table, statement.Filter, out var pkValue))
         {
-            throw new InvalidOperationException($"WHERE only supports the primary key column '{table.Schema.PrimaryKeyColumn.Name}'.");
+            _storage.Delete(table.TableName, pkValue);
+            return QueryExecutionResult.Empty(rowsAffected: 1);
         }
 
-        var primaryKey = ConvertLiteral(table.Schema.PrimaryKeyColumn, statement.Filter.Value);
-        if (primaryKey is not long primaryKeyValue)
+        var context = new[] { (Table: table, Offset: 0) };
+        var matchingRows = _storage.ReadAll(table.TableName)
+            .Where(row => EvaluateWhereInContext(statement.Filter, row, context))
+            .ToArray();
+
+        foreach (var row in matchingRows)
         {
-            throw new InvalidOperationException("Primary key filters must resolve to Int64 values.");
+            _storage.Delete(table.TableName, (long)row[table.Schema.PrimaryKeyOrdinal]!);
         }
 
-        _storage.Delete(table.TableName, primaryKeyValue);
-        return QueryExecutionResult.Empty(rowsAffected: 1);
+        return QueryExecutionResult.Empty(rowsAffected: matchingRows.Length);
     }
 
     private QueryExecutionResult ExecuteUpdate(UpdateStatement statement)
     {
         var table = _storage.GetTable(statement.TableName);
-        var filterOrdinal = table.Schema.GetColumnOrdinal(statement.Filter.ColumnName);
-        if (filterOrdinal != table.Schema.PrimaryKeyOrdinal)
+
+        if (TryExtractPrimaryKeyEquality(table, statement.Filter, out var pkValue))
         {
-            throw new InvalidOperationException($"WHERE only supports the primary key column '{table.Schema.PrimaryKeyColumn.Name}'.");
+            if (!_storage.TryReadByPrimaryKey(table.TableName, pkValue, out var existingValues) || existingValues is null)
+            {
+                throw new InvalidOperationException($"Table '{table.TableName}' does not contain a row with primary key {pkValue}.");
+            }
+
+            var newValues = ApplyAssignments(table, existingValues, statement.Assignments);
+            _storage.Update(table.TableName, pkValue, newValues);
+            return QueryExecutionResult.Empty(rowsAffected: 1);
         }
 
-        var primaryKey = ConvertLiteral(table.Schema.PrimaryKeyColumn, statement.Filter.Value);
-        if (primaryKey is not long primaryKeyValue)
+        var context = new[] { (Table: table, Offset: 0) };
+        var matchingRows = _storage.ReadAll(table.TableName)
+            .Where(row => EvaluateWhereInContext(statement.Filter, row, context))
+            .ToArray();
+
+        foreach (var row in matchingRows)
         {
-            throw new InvalidOperationException("Primary key filters must resolve to Int64 values.");
+            var pk = (long)row[table.Schema.PrimaryKeyOrdinal]!;
+            var updated = ApplyAssignments(table, row, statement.Assignments);
+            _storage.Update(table.TableName, pk, updated);
         }
 
-        if (!_storage.TryReadByPrimaryKey(table.TableName, primaryKeyValue, out var existingValues) || existingValues is null)
-        {
-            throw new InvalidOperationException($"Table '{table.TableName}' does not contain a row with primary key {primaryKeyValue}.");
-        }
+        return QueryExecutionResult.Empty(rowsAffected: matchingRows.Length);
+    }
 
+    private object?[] ApplyAssignments(TableInfo table, object?[] existingValues, IReadOnlyList<ColumnAssignment> assignments)
+    {
         var newValues = existingValues.ToArray();
-        foreach (var assignment in statement.Assignments)
+        foreach (var assignment in assignments)
         {
             var columnOrdinal = table.Schema.GetColumnOrdinal(assignment.ColumnName);
             if (columnOrdinal == table.Schema.PrimaryKeyOrdinal)
@@ -160,8 +261,7 @@ public sealed class QueryEngine : IDisposable
             newValues[columnOrdinal] = ConvertLiteral(table.Schema.Columns[columnOrdinal], assignment.Value);
         }
 
-        _storage.Update(table.TableName, primaryKeyValue, newValues);
-        return QueryExecutionResult.Empty(rowsAffected: 1);
+        return newValues;
     }
 
     private object?[] BindInsertValues(TableInfo table, InsertStatement statement)
@@ -207,7 +307,7 @@ public sealed class QueryEngine : IDisposable
         return boundValues;
     }
 
-    private static int[] BindSelectedColumns(TableSchema schema, IReadOnlyList<string>? columns)
+    private static int[] BindSingleTableColumns(TableSchema schema, IReadOnlyList<ColumnReference>? columns)
     {
         if (columns is null)
         {
@@ -219,26 +319,223 @@ public sealed class QueryEngine : IDisposable
             throw new InvalidOperationException("SELECT requires at least one projected column.");
         }
 
-        return columns.Select(schema.GetColumnOrdinal).ToArray();
+        return columns.Select(col =>
+        {
+            if (col.TableName is not null &&
+                !string.Equals(col.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Table '{col.TableName}' not found in the FROM clause.");
+            }
+
+            return schema.GetColumnOrdinal(col.ColumnName);
+        }).ToArray();
     }
 
-    private IReadOnlyList<object?[]> ReadFilteredRows(TableInfo table, PrimaryKeyFilter filter)
+    private IReadOnlyList<object?[]> ReadFilteredRows(TableInfo table, WhereExpression filter)
     {
-        var filterOrdinal = table.Schema.GetColumnOrdinal(filter.ColumnName);
-        if (filterOrdinal != table.Schema.PrimaryKeyOrdinal)
+        if (TryExtractPrimaryKeyEquality(table, filter, out var pkValue))
         {
-            throw new InvalidOperationException($"WHERE only supports the primary key column '{table.Schema.PrimaryKeyColumn.Name}'.");
+            return _storage.TryReadByPrimaryKey(table.TableName, pkValue, out var row)
+                ? new[] { row! }
+                : Array.Empty<object?[]>();
         }
 
-        var primaryKey = ConvertLiteral(table.Schema.PrimaryKeyColumn, filter.Value);
-        if (primaryKey is not long primaryKeyValue)
+        var context = new[] { (Table: table, Offset: 0) };
+        return _storage.ReadAll(table.TableName)
+            .Where(row => EvaluateWhereInContext(filter, row, context))
+            .ToArray();
+    }
+
+    private static bool TryExtractPrimaryKeyEquality(TableInfo table, WhereExpression filter, out long primaryKey)
+    {
+        primaryKey = 0;
+        if (filter is not ComparisonExpression { Op: ComparisonOp.Equals } cmp)
+            return false;
+        if (cmp.TableName is not null &&
+            !string.Equals(cmp.TableName, table.TableName, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!table.Schema.TryGetColumnOrdinal(cmp.ColumnName, out var ordinal) ||
+            ordinal != table.Schema.PrimaryKeyOrdinal)
+            return false;
+        if (ConvertLiteral(table.Schema.PrimaryKeyColumn, cmp.Value) is not long pk)
+            return false;
+        primaryKey = pk;
+        return true;
+    }
+
+    private static bool EvaluateWhereInContext(
+        WhereExpression filter,
+        object?[] row,
+        IReadOnlyList<(TableInfo Table, int Offset)> context)
+    {
+        return filter switch
         {
-            throw new InvalidOperationException("Primary key filters must resolve to Int64 values.");
+            BinaryLogicalExpression binary => binary.Op == LogicalOp.And
+                ? EvaluateWhereInContext(binary.Left, row, context) &&
+                  EvaluateWhereInContext(binary.Right, row, context)
+                : EvaluateWhereInContext(binary.Left, row, context) ||
+                  EvaluateWhereInContext(binary.Right, row, context),
+
+            ComparisonExpression cmp =>
+                EvaluateComparison(row[ResolveColumn(cmp.TableName, cmp.ColumnName, context)], cmp.Op, cmp.Value.Value),
+
+            _ => throw new InvalidOperationException($"Unknown WHERE expression type '{filter.GetType().Name}'.")
+        };
+    }
+
+    private static int ResolveColumn(
+        string? tableName,
+        string columnName,
+        IReadOnlyList<(TableInfo Table, int Offset)> context)
+    {
+        if (tableName is not null)
+        {
+            var entry = context.FirstOrDefault(e =>
+                string.Equals(e.Table.TableName, tableName, StringComparison.OrdinalIgnoreCase));
+            if (entry.Table is null)
+                throw new InvalidOperationException($"Table '{tableName}' not found.");
+            return entry.Offset + entry.Table.Schema.GetColumnOrdinal(columnName);
         }
 
-        return _storage.TryReadByPrimaryKey(table.TableName, primaryKeyValue, out var row)
-            ? new[] { row! }
-            : Array.Empty<object?[]>();
+        var matches = new List<int>();
+        foreach (var (table, offset) in context)
+        {
+            if (table.Schema.TryGetColumnOrdinal(columnName, out var ordinal))
+                matches.Add(offset + ordinal);
+        }
+
+        return matches.Count switch
+        {
+            0 => throw new InvalidOperationException($"Column '{columnName}' does not exist."),
+            1 => matches[0],
+            _ => throw new InvalidOperationException($"Column '{columnName}' is ambiguous across joined tables. Use table-qualified names.")
+        };
+    }
+
+    private static bool EvaluateComparison(object? columnValue, ComparisonOp op, object literalValue)
+    {
+        if (columnValue is null)
+            return false;
+
+        if (columnValue is byte[] columnBytes)
+        {
+            if (literalValue is not byte[] literalBytes)
+                throw new InvalidOperationException("Cannot compare a blob column with a non-blob value.");
+            var blobEqual = columnBytes.SequenceEqual(literalBytes);
+            return op switch
+            {
+                ComparisonOp.Equals => blobEqual,
+                ComparisonOp.NotEquals => !blobEqual,
+                _ => throw new InvalidOperationException("Blob columns only support = and <> comparisons.")
+            };
+        }
+
+        if (columnValue is not IComparable comparable)
+            throw new InvalidOperationException($"Column value of type '{columnValue.GetType().Name}' does not support comparison.");
+
+        int cmp;
+        try
+        {
+            cmp = comparable.CompareTo(literalValue);
+        }
+        catch (ArgumentException)
+        {
+            throw new InvalidOperationException(
+                $"Cannot compare a value of type '{columnValue.GetType().Name}' with a literal of type '{literalValue.GetType().Name}'.");
+        }
+
+        return op switch
+        {
+            ComparisonOp.Equals => cmp == 0,
+            ComparisonOp.NotEquals => cmp != 0,
+            ComparisonOp.LessThan => cmp < 0,
+            ComparisonOp.GreaterThan => cmp > 0,
+            ComparisonOp.LessThanOrEquals => cmp <= 0,
+            ComparisonOp.GreaterThanOrEquals => cmp >= 0,
+            _ => throw new InvalidOperationException($"Unknown comparison operator {op}.")
+        };
+    }
+
+    private IReadOnlyList<(TableInfo Table, int Offset)> BuildJoinContext(
+        TableInfo fromTable,
+        IReadOnlyList<JoinClause> joins)
+    {
+        var context = new List<(TableInfo Table, int Offset)>
+        {
+            (fromTable, 0)
+        };
+
+        var offset = fromTable.Schema.Columns.Count;
+        foreach (var join in joins)
+        {
+            var joinTable = _storage.GetTable(join.TableName);
+
+            if (context.Any(e => string.Equals(e.Table.TableName, joinTable.TableName, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Table '{join.TableName}' appears more than once in the query. Self-joins are not supported.");
+            }
+
+            context.Add((joinTable, offset));
+            offset += joinTable.Schema.Columns.Count;
+        }
+
+        return context;
+    }
+
+    private static (TableInfo Table, int Offset) FindTableEntry(
+        IReadOnlyList<(TableInfo Table, int Offset)> context,
+        string tableName)
+    {
+        var entry = context.FirstOrDefault(e =>
+            string.Equals(e.Table.TableName, tableName, StringComparison.OrdinalIgnoreCase));
+        if (entry.Table is null)
+            throw new InvalidOperationException($"Table '{tableName}' not found in the ON condition.");
+        return entry;
+    }
+
+    private static (int[] Indices, string[] Names) BindJoinColumns(
+        IReadOnlyList<ColumnReference>? columns,
+        IReadOnlyList<(TableInfo Table, int Offset)> context)
+    {
+        if (columns is null)
+        {
+            var allIndices = new List<int>();
+            var allNames = new List<string>();
+            foreach (var (table, offset) in context)
+            {
+                for (var i = 0; i < table.Schema.Columns.Count; i++)
+                {
+                    allIndices.Add(offset + i);
+                    allNames.Add($"{table.TableName}.{table.Schema.Columns[i].Name}");
+                }
+            }
+            return (allIndices.ToArray(), allNames.ToArray());
+        }
+
+        if (columns.Count == 0)
+            throw new InvalidOperationException("SELECT requires at least one projected column.");
+
+        var indices = new int[columns.Count];
+        var names = new string[columns.Count];
+        for (var i = 0; i < columns.Count; i++)
+        {
+            var col = columns[i];
+            indices[i] = ResolveColumn(col.TableName, col.ColumnName, context);
+            names[i] = col.TableName is not null
+                ? $"{col.TableName}.{col.ColumnName}"
+                : col.ColumnName;
+        }
+
+        return (indices, names);
+    }
+
+    private static bool ValuesEqual(object? left, object? right)
+    {
+        if (left is null && right is null) return true;
+        if (left is null || right is null) return false;
+        if (left is byte[] lb && right is byte[] rb) return lb.SequenceEqual(rb);
+        return left.Equals(right);
     }
 
     private static object ConvertLiteral(ColumnDefinition column, SqlLiteral literal) =>
