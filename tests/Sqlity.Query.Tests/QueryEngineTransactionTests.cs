@@ -151,4 +151,58 @@ public sealed class QueryEngineTransactionTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    [Fact]
+    public void Begin_transaction_keyword_is_accepted()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlity");
+        try
+        {
+            using (var engine = new QueryEngine(path))
+            {
+                engine.Execute("BEGIN TRANSACTION;");
+                engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, v INT64 NOT NULL);");
+                engine.Execute("INSERT INTO t VALUES (1, 7);");
+                engine.Execute("COMMIT;");
+            }
+
+            using var engine2 = new QueryEngine(path);
+            var result = engine2.Execute("SELECT v FROM t WHERE id = 1;");
+            Assert.Single(result.Rows);
+            Assert.Equal(7L, result.Rows[0][0]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Multi_statement_batch_executes_all_statements()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlity");
+        try
+        {
+            using var engine = new QueryEngine(path);
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, v INT64 NOT NULL);");
+            engine.Execute("BEGIN; INSERT INTO t VALUES (1, 10); INSERT INTO t VALUES (2, 20); COMMIT;");
+
+            var result = engine.Execute("SELECT v FROM t;");
+            Assert.Equal(2, result.Rows.Count);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Multi_statement_batch_rollback_discards_all()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlity");
+        try
+        {
+            using var engine = new QueryEngine(path);
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, v INT64 NOT NULL);");
+            engine.Execute("BEGIN; INSERT INTO t VALUES (1, 10); INSERT INTO t VALUES (2, 20); ROLLBACK;");
+
+            var result = engine.Execute("SELECT v FROM t;");
+            Assert.Empty(result.Rows);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

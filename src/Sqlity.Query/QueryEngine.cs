@@ -55,15 +55,23 @@ public sealed class QueryEngine : IDisposable
 
     public QueryExecutionResult Execute(string sql)
     {
-        var statement = new SqlParser(sql).ParseStatement();
+        var statements = new SqlParser(sql).ParseAll();
 
-        return statement switch
+        if (statements.Count == 0)
+            return QueryExecutionResult.Empty(rowsAffected: 0);
+
+        QueryExecutionResult last = QueryExecutionResult.Empty(rowsAffected: 0);
+        foreach (var statement in statements)
         {
-            BeginStatement => ExecuteBegin(),
-            CommitStatement => ExecuteCommit(),
-            RollbackStatement => ExecuteRollback(),
-            _ => ExecuteDml(statement)
-        };
+            last = statement switch
+            {
+                BeginStatement => ExecuteBegin(),
+                CommitStatement => ExecuteCommit(),
+                RollbackStatement => ExecuteRollback(),
+                _ => ExecuteDml(statement)
+            };
+        }
+        return last;
     }
 
     public void Dispose()

@@ -15,11 +15,12 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 
 ## 3. Transactions and durability ✅
 
-- `BEGIN` / `COMMIT` / `ROLLBACK` transaction boundaries — **done**
+- `BEGIN` / `BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK` transaction boundaries — **done**
 - rollback journal (page-level journaling before each write; journal deleted on commit) — **done**
 - crash recovery: stale journal on reopen triggers automatic rollback — **done**
 - `SqlityTransaction.Commit()` and `Rollback()` wired to real storage operations — **done**
 - auto-commit for statements executed outside an explicit `BEGIN` — **done**
+- multi-statement batch execution in a single `Execute` / `ExecuteNonQuery` call — **done**
 
 ## 4. Secondary indexes and query planning
 
@@ -36,7 +37,6 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - scalar subqueries and `IN (subquery)`
 - `DROP TABLE` and `ALTER TABLE`
 - additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME`
-- multi-statement batch execution in a single `Execute` call
 
 ## 6. EF Core provider
 

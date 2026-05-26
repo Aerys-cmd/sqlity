@@ -64,27 +64,34 @@ time. Concurrent access from multiple processes or threads is not supported.
 ## SQL syntax
 
 ```sql
+-- BEGIN and BEGIN TRANSACTION are equivalent
 BEGIN;
 INSERT INTO orders VALUES (1, 'Widget', 49);
 INSERT INTO orders VALUES (2, 'Gadget', 99);
 COMMIT;
 
 -- Undo a transaction
-BEGIN;
+BEGIN TRANSACTION;
 DELETE FROM orders WHERE id = 2;
 ROLLBACK;
+
+-- Multi-statement batch: all three statements sent as one string
+BEGIN; INSERT INTO orders VALUES (3, 'Sprocket', 15); COMMIT;
 ```
 
 Rules:
-- `BEGIN` opens a new transaction. Nesting a second `BEGIN` throws an error.
+- `BEGIN` and `BEGIN TRANSACTION` are equivalent — both open a new transaction.
+- Nesting a second `BEGIN` inside an active transaction throws an error.
 - `COMMIT` flushes and closes the transaction. Subsequent `COMMIT` / `ROLLBACK` throw.
 - `ROLLBACK` restores the database to the state before `BEGIN`. Subsequent calls throw.
 - Any DML/DDL statement executed *outside* an explicit `BEGIN` auto-commits (single-statement
   transaction), consistent with SQLite's default behaviour.
+- Multiple statements separated by `;` can be sent in a single `Execute` call or as a single
+  `cmd.CommandText`. They are executed in order; the result of the last statement is returned.
 
 ## ADO.NET
 
-Use the standard `DbConnection.BeginTransaction` / `DbTransaction.Commit` / `DbTransaction.Rollback` API:
+**Option 1 — ADO.NET transaction API (recommended):**
 
 ```csharp
 using var conn = new SqlityConnection("Data Source=shop.sqlity");
@@ -107,6 +114,19 @@ catch
     tx.Rollback();
     throw;
 }
+```
+
+**Option 2 — SQL transaction statements in `CommandText`:**
+
+Multi-statement batches (statements separated by `;`) are supported in a single `ExecuteNonQuery` call:
+
+```csharp
+using var conn = new SqlityConnection("Data Source=shop.sqlity");
+conn.Open();
+
+using var cmd = conn.CreateCommand();
+cmd.CommandText = "BEGIN TRANSACTION; INSERT INTO orders VALUES (1, 'Widget', 49); INSERT INTO orders VALUES (2, 'Gadget', 99); COMMIT;";
+cmd.ExecuteNonQuery();
 ```
 
 Disposing a `SqlityTransaction` without calling `Commit` automatically calls `Rollback`:

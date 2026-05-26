@@ -33,9 +33,38 @@ internal sealed class SqlParser
         return statement;
     }
 
+    /// <summary>Parses all statements in a multi-statement SQL string.</summary>
+    public IReadOnlyList<SqlStatement> ParseAll()
+    {
+        var statements = new List<SqlStatement>();
+
+        while (Peek().Kind != SqlTokenKind.EndOfInput)
+        {
+            SqlStatement statement = Peek().Kind switch
+            {
+                SqlTokenKind.Create => ParseCreateTable(),
+                SqlTokenKind.Insert => ParseInsert(),
+                SqlTokenKind.Select => ParseSelect(),
+                SqlTokenKind.Update => ParseUpdate(),
+                SqlTokenKind.Delete => ParseDelete(),
+                SqlTokenKind.Begin => ParseBegin(),
+                SqlTokenKind.Commit => ParseCommit(),
+                SqlTokenKind.Rollback => ParseRollback(),
+                _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
+            };
+
+            Match(SqlTokenKind.Semicolon);
+            statements.Add(statement);
+        }
+
+        return statements;
+    }
+
     private BeginStatement ParseBegin()
     {
         Expect(SqlTokenKind.Begin);
+        // Accept optional TRANSACTION keyword: BEGIN TRANSACTION;
+        Match(SqlTokenKind.Transaction);
         return new BeginStatement();
     }
 

@@ -17,22 +17,28 @@ Sqlity now includes a small executable query layer on top of the storage engine.
 ### Transaction control
 
 ```sql
+-- BEGIN and BEGIN TRANSACTION are equivalent
 BEGIN;
 INSERT INTO orders VALUES (1, 'Widget', 49);
 INSERT INTO orders VALUES (2, 'Gadget', 99);
 COMMIT;
 
-BEGIN;
+BEGIN TRANSACTION;
 DELETE FROM orders WHERE id = 2;
 ROLLBACK;
+
+-- Multi-statement batch in one string
+BEGIN; INSERT INTO orders VALUES (3, 'Sprocket', 15); COMMIT;
 ```
 
 Rules:
 
-- `BEGIN` opens a transaction. Nesting a second `BEGIN` throws.
+- `BEGIN` and `BEGIN TRANSACTION` are equivalent. Nesting a second `BEGIN` throws.
 - `COMMIT` persists all changes made since `BEGIN` and closes the transaction.
 - `ROLLBACK` discards all changes made since `BEGIN` and closes the transaction.
 - Any DML/DDL executed outside an explicit `BEGIN` auto-commits as a single-statement transaction.
+- Multiple `;`-separated statements can be passed to a single `Execute` / `ExecuteNonQuery` call;
+  they execute in order and the result of the last statement is returned.
 
 See `docs/transactions.md` for crash-recovery invariants and the journal format.
 

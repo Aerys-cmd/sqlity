@@ -26,9 +26,10 @@ The repository now contains a storage engine, an executable SQL layer, a complet
 - nullable columns (`NOT NULL` constraint), `NULL` literals, and `IS NULL` / `IS NOT NULL` in `WHERE`
 - `INNER JOIN` and `LEFT JOIN` with compound `WHERE` expressions
 - full ADO.NET provider: `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`
-- `BEGIN` / `COMMIT` / `ROLLBACK` transaction boundaries
+- `BEGIN` / `BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK` transaction boundaries
 - rollback journal: every write is journaled before it happens; a stale journal on reopen triggers automatic crash recovery
 - auto-commit for statements executed outside an explicit `BEGIN`
+- multi-statement batch execution: multiple `;`-separated statements in a single `Execute` call
 - storage, query, CLI, and ADO.NET test coverage
 
 ## Repository layout
@@ -175,7 +176,7 @@ engine.Execute("DELETE FROM users WHERE id = 2;");
 
 Current limits to keep in mind:
 
-- supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `BEGIN`, `COMMIT`, and `ROLLBACK`
+- supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `BEGIN` / `BEGIN TRANSACTION`, `COMMIT`, and `ROLLBACK`; multiple statements can be batched in a single call
 - `WHERE` supports any column with full `AND`/`OR` composition and `IS NULL` / `IS NOT NULL`; primary-key equality uses a B+ tree point lookup, all other filters fall back to a full scan
 - no aggregates, no `ORDER BY`, no subqueries
 
