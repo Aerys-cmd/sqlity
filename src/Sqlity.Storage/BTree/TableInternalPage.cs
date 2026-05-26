@@ -135,6 +135,92 @@ public sealed class TableInternalPage
         return cells;
     }
 
+    /// <summary>
+    /// Removes the slot that points to <paramref name="childPageId"/> as a child page.
+    /// <list type="bullet">
+    ///   <item>If the child is <see cref="LeftmostChildPageId"/>: promotes the first cell's
+    ///   right-child pointer as the new leftmost child and removes that cell.</item>
+    ///   <item>Otherwise: finds the cell whose <c>RightChildPageId</c> equals the argument
+    ///   and removes it.</item>
+    /// </list>
+    /// </summary>
+    public RemoveChildStatus TryRemoveChildReference(uint childPageId)
+    {
+        var header = Page.ReadHeader();
+
+        if (LeftmostChildPageId == childPageId)
+        {
+            if (header.CellCount == 0)
+            {
+                // Only child — the tree is now structurally empty at this level.
+                return RemoveChildStatus.LastChildRemoved;
+            }
+
+            var firstCell = ReadCell(0);
+            // Update the leftmost pointer to the promoted right child and pass the
+            // updated header into RemoveCellAtIndex so it doesn't overwrite SpecialPageId.
+            var updatedHeader = header with { SpecialPageId = firstCell.RightChildPageId };
+            Page.WriteHeader(updatedHeader);
+            RemoveCellAtIndex(0, updatedHeader);
+            return RemoveChildStatus.Success;
+        }
+
+        for (ushort i = 0; i < header.CellCount; i++)
+        {
+            if (ReadCell(i).RightChildPageId == childPageId)
+            {
+                RemoveCellAtIndex(i, header);
+                return RemoveChildStatus.Success;
+            }
+        }
+
+        return RemoveChildStatus.NotFound;
+    }
+
+    private void RemoveCellAtIndex(ushort index, PageHeader header)
+    {
+        var cellOffset = ReadCellPointer(index);
+
+        // Internal cells are fixed size. Shift cells physically above (lower offset) up by
+        // InternalCellSize to fill the hole left by the removed cell.
+        var bytesToCompact = cellOffset - header.CellContentStart;
+        if (bytesToCompact > 0)
+        {
+            Page.Span
+                .Slice(header.CellContentStart, bytesToCompact)
+                .CopyTo(Page.Span[(header.CellContentStart + BTreePageLayout.InternalCellSize)..]);
+        }
+
+        // Adjust pointers for cells that physically moved.
+        for (ushort i = 0; i < header.CellCount; i++)
+        {
+            if (i == index) continue;
+
+            var pointer = ReadCellPointer(i);
+            if (pointer < cellOffset)
+            {
+                WriteCellPointer(i, checked((ushort)(pointer + BTreePageLayout.InternalCellSize)));
+            }
+        }
+
+        // Remove the slot pointer by shifting all subsequent slots one position to the left.
+        var pointerOffset = BTreePageLayout.GetCellPointerOffset(index);
+        var trailingBytes = (header.CellCount - index - 1) * BTreePageLayout.CellPointerSize;
+        if (trailingBytes > 0)
+        {
+            Page.Span
+                .Slice(pointerOffset + BTreePageLayout.CellPointerSize, trailingBytes)
+                .CopyTo(Page.Span[pointerOffset..]);
+        }
+
+        Page.WriteHeader(
+            header with
+            {
+                CellCount = checked((ushort)(header.CellCount - 1)),
+                CellContentStart = checked((ushort)(header.CellContentStart + BTreePageLayout.InternalCellSize))
+            });
+    }
+
     private SearchResult FindSlot(long key, PageHeader header)
     {
         var low = 0;
@@ -176,4 +262,15 @@ public sealed class TableInternalPage
     }
 
     private readonly record struct SearchResult(bool Found, ushort InsertIndex);
+}
+
+public enum RemoveChildStatus
+{
+    Success,
+    NotFound,
+    /// <summary>
+    /// Returned when the last remaining child pointer was removed. The caller should
+    /// collapse the internal page (e.g. reformat the root as an empty leaf).
+    /// </summary>
+    LastChildRemoved
 }

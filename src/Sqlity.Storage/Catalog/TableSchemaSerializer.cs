@@ -6,7 +6,8 @@ namespace Sqlity.Storage.Catalog;
 
 internal sealed class TableSchemaSerializer
 {
-    private const byte CurrentVersion = 1;
+    private const byte Version1 = 1;
+    private const byte CurrentVersion = 2;
     private static readonly Encoding Utf8 = Encoding.UTF8;
 
     public byte[] Serialize(TableSchema schema)
@@ -26,6 +27,7 @@ internal sealed class TableSchemaSerializer
         {
             offset = WriteString(column.Name, buffer, offset);
             buffer[offset++] = (byte)column.Type;
+            buffer[offset++] = column.IsNullable ? (byte)1 : (byte)0;
         }
 
         return buffer;
@@ -40,7 +42,7 @@ internal sealed class TableSchemaSerializer
 
         var offset = 0;
         var version = source[offset++];
-        if (version != CurrentVersion)
+        if (version != Version1 && version != CurrentVersion)
         {
             throw new InvalidDataException($"Unsupported table schema format version {version}.");
         }
@@ -62,7 +64,25 @@ internal sealed class TableSchemaSerializer
                 throw new InvalidDataException("The persisted table schema ended before the column type was available.");
             }
 
-            columns[index] = new ColumnDefinition(columnName, (ColumnType)source[offset++]);
+            var columnType = (ColumnType)source[offset++];
+
+            bool isNullable;
+            if (version == Version1)
+            {
+                // Version 1 had no nullable flag; all non-PK columns default to nullable.
+                isNullable = index != primaryKeyOrdinal;
+            }
+            else
+            {
+                if (offset >= source.Length)
+                {
+                    throw new InvalidDataException("The persisted table schema ended before the nullable flag was available.");
+                }
+
+                isNullable = source[offset++] != 0;
+            }
+
+            columns[index] = new ColumnDefinition(columnName, columnType, isNullable);
         }
 
         return new TableSchema(tableName, columns, primaryKeyOrdinal);
@@ -78,7 +98,8 @@ internal sealed class TableSchemaSerializer
         foreach (var column in schema.Columns)
         {
             size += sizeof(ushort) + Utf8.GetByteCount(column.Name);
-            size += sizeof(byte);
+            size += sizeof(byte); // type
+            size += sizeof(byte); // nullable flag
         }
 
         return size;

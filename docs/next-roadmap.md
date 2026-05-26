@@ -8,10 +8,10 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - adapt the existing `QueryEngine` result model instead of duplicating execution logic — **done**
 - surface table metadata and column ordinals through provider-friendly APIs — **done**
 
-## 2. Correctness gaps
+## 2. Correctness gaps ✅
 
-- add `NULL` support — `INSERT` currently requires all columns; `NULL` literals and nullable columns are not parsed or stored
-- recycle emptied pages through the existing free-list path (page-level reclaim still pending after `DELETE`)
+- `NULL` support — nullable columns, `NULL` literals, `NOT NULL` constraints, `IS NULL` / `IS NOT NULL` expressions — **done**
+- page recycling — emptied B+ tree leaf pages are now released back to the free-list via `ReleasePage` — **done**
 
 ## 3. Transactions and durability
 

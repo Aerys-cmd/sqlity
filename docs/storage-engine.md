@@ -123,8 +123,9 @@ Rows must be converted into bytes before they can be placed in a page. The row f
 
 ### Initial Sqlity row format
 
-For the MVP, rows are schema-bound and store only a few types:
+For the MVP, rows are schema-bound and store the following types:
 
+- `Null` (type tag `0`) — no payload bytes; represents a SQL `NULL` value
 - `Int64`
 - `String`
 - `Blob`
@@ -142,9 +143,10 @@ The row format is:
 
 This intentionally stores the type tag even though the schema already knows it. The redundancy makes early debugging and corruption detection easier, which is worth the overhead in an educational engine.
 
-For now:
+A `NULL` value is encoded as type tag `0` with payload length `0` — no payload bytes are written. On read, a `Null` type tag yields a `null` column value.
 
-- `NULL` is not supported yet.
+For non-null columns:
+
 - the primary key must be `Int64`
 - strings are UTF-8 encoded
 - blobs are raw bytes
@@ -204,7 +206,7 @@ Key design decisions:
 - Internal pages use the same slotted-page layout as leaf pages. Each cell is a fixed 12-byte `(DividerKey int64, RightChildPageId uint32)` pair. `SpecialPageId` stores the leftmost child page id.
 - On root overflow the root page id never changes. Content is moved to freshly allocated pages and the root is reformatted in-place as an internal page. This means the system catalog never needs updating after a split.
 - Leaf splits use a byte-size-based midpoint rather than a count-based one, so variable-length rows are distributed evenly across the two new pages.
-- No merge on delete. Underflowing pages are left in place (acceptable for an educational engine at this stage).
+- No merge on delete. Underflowing pages are left in place. When a leaf page becomes **completely empty** after deletes, it is reclaimed: the leaf chain is repaired, the parent internal cell referencing the empty page is removed, the page is returned to the free list, and (when the last child reference is removed from the root) the root is reformatted as an empty leaf.
 
 ## 7. Proposed namespaces and classes
 
@@ -307,7 +309,7 @@ The current implementation supports:
 - duplicate-key rejection across the whole tree
 - binary-search lookup from root to the correct leaf
 - `ReadAll` scans the leaf chain without re-traversing the tree
-- row deletion with correct slotted-page compaction
+- row deletion with correct slotted-page compaction; completely emptied leaf pages are returned to the free list and the leaf chain and parent internal page are repaired
 - row update: in-place overwrite for same-size payload; safe delete-then-reinsert with space preflight for size-changed payload
 - persistence through `FilePager`
 - catalog-backed table discovery after reopening the file
@@ -316,7 +318,7 @@ The current implementation supports:
 Current limitations:
 
 - no overflow handling for rows larger than a single page
-- no page merge on delete (underflowing pages are not reclaimed)
+- no cascading internal-page collapse across more than one level (a single-level parent compaction is supported)
 
 ### Free-list pages
 

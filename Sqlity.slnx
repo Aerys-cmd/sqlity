@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Sqlity.Benchmarks/Sqlity.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Sqlity.Cli/Sqlity.Cli.csproj" />
   </Folder>

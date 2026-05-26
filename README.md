@@ -16,13 +16,14 @@ The repository now contains a storage engine, an executable SQL layer, and a com
 - a single-file database format
 - a fixed 4096-byte page model
 - binary file and page headers
-- row serialization primitives
-- free-page list primitives
-- a persisted table catalog and schema serializer
+- row serialization primitives with `NULL` value support
+- free-page list primitives; emptied B+ tree leaf pages are recycled back to the free list
+- a persisted table catalog and schema serializer (version 2 with per-column nullable flags)
 - single-page table storage with ordered primary-key insertion
 - slotted-page compaction on delete (correct pointer array and cell content compaction)
 - in-place and resize-safe row updates
 - SQL execution for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
+- nullable columns (`NOT NULL` constraint), `NULL` literals, and `IS NULL` / `IS NOT NULL` in `WHERE`
 - `INNER JOIN` and `LEFT JOIN` with compound `WHERE` expressions
 - full ADO.NET provider: `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`
 - storage, query, CLI, and ADO.NET test coverage
@@ -111,6 +112,7 @@ using (var cmd = conn.CreateCommand())
         CREATE TABLE users (
             id    INT64   PRIMARY KEY,
             name  STRING,
+            score INT64   NOT NULL,
             active BOOLEAN
         );
         """;
@@ -148,6 +150,7 @@ engine.Execute("""
     CREATE TABLE users (
         id INT64 PRIMARY KEY,
         name STRING,
+        score INT64 NOT NULL,
         is_active BOOLEAN
     );
     """);
@@ -169,8 +172,8 @@ engine.Execute("DELETE FROM users WHERE id = 2;");
 Current limits to keep in mind:
 
 - supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
-- `WHERE` supports any column with full `AND`/`OR` composition; primary-key equality uses a B+ tree point lookup, all other filters fall back to a full scan
-- no `NULL` support, no aggregates, no `ORDER BY`, no subqueries
+- `WHERE` supports any column with full `AND`/`OR` composition and `IS NULL` / `IS NOT NULL`; primary-key equality uses a B+ tree point lookup, all other filters fall back to a full scan
+- no aggregates, no `ORDER BY`, no subqueries
 
 That file path is the database. If `my-db.sqlity` does not exist, Sqlity creates it; if it exists, Sqlity reopens it.
 

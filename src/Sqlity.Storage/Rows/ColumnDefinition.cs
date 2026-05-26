@@ -1,3 +1,3 @@
 namespace Sqlity.Storage.Rows;
 
-public sealed record ColumnDefinition(string Name, ColumnType Type);
+public sealed record ColumnDefinition(string Name, ColumnType Type, bool IsNullable = true);

@@ -40,12 +40,21 @@ public sealed class RowSerializer
         {
             var column = schema.Columns[index];
             var value = values[index];
-            var payloadLength = GetPayloadLength(column.Type, value);
 
-            destination[offset++] = (byte)column.Type;
-            BinaryPrimitives.WriteUInt16LittleEndian(destination[offset..(offset + sizeof(ushort))], checked((ushort)payloadLength));
-            offset += sizeof(ushort);
-            offset += WritePayload(column.Type, value, destination[offset..]);
+            if (value is null)
+            {
+                destination[offset++] = (byte)ColumnType.Null;
+                BinaryPrimitives.WriteUInt16LittleEndian(destination[offset..(offset + sizeof(ushort))], 0);
+                offset += sizeof(ushort);
+            }
+            else
+            {
+                var payloadLength = GetPayloadLength(column.Type, value);
+                destination[offset++] = (byte)column.Type;
+                BinaryPrimitives.WriteUInt16LittleEndian(destination[offset..(offset + sizeof(ushort))], checked((ushort)payloadLength));
+                offset += sizeof(ushort);
+                offset += WritePayload(column.Type, value, destination[offset..]);
+            }
         }
 
         return offset;
@@ -76,22 +85,34 @@ public sealed class RowSerializer
         {
             var expectedType = schema.Columns[index].Type;
             var storedType = (ColumnType)source[offset++];
-            if (storedType != expectedType)
-            {
-                throw new InvalidDataException($"Expected column type {expectedType}, but found {storedType}.");
-            }
 
             var payloadLength = BinaryPrimitives.ReadUInt16LittleEndian(source[offset..(offset + sizeof(ushort))]);
             offset += sizeof(ushort);
-            values[index] = ReadPayload(storedType, payloadLength, source[offset..]);
-            offset += payloadLength;
+
+            if (storedType == ColumnType.Null)
+            {
+                values[index] = null;
+            }
+            else
+            {
+                if (storedType != expectedType)
+                {
+                    throw new InvalidDataException($"Expected column type {expectedType}, but found {storedType}.");
+                }
+
+                values[index] = ReadPayload(storedType, payloadLength, source[offset..]);
+                offset += payloadLength;
+            }
         }
 
         return values;
     }
 
-    private static int GetPayloadLength(ColumnType type, object? value) =>
-        type switch
+    private static int GetPayloadLength(ColumnType type, object? value)
+    {
+        if (value is null) return 0;
+
+        return type switch
         {
             ColumnType.Int64 => value is long ? sizeof(long) : throw new InvalidOperationException("Int64 columns require long values."),
             ColumnType.String => value is string stringValue ? Utf8.GetByteCount(stringValue) : throw new InvalidOperationException("String columns require string values."),
@@ -99,6 +120,7 @@ public sealed class RowSerializer
             ColumnType.Boolean => value is bool ? sizeof(byte) : throw new InvalidOperationException("Boolean columns require bool values."),
             _ => throw new NotSupportedException($"Column type {type} is not supported.")
         };
+    }
 
     private static int WritePayload(ColumnType type, object? value, Span<byte> destination) =>
         type switch

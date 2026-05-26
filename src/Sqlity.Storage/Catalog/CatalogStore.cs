@@ -12,7 +12,7 @@ internal sealed class CatalogStore
             "__sqlity_tables",
             new[]
             {
-                new ColumnDefinition("table_id", ColumnType.Int64),
+                new ColumnDefinition("table_id", ColumnType.Int64, IsNullable: false),
                 new ColumnDefinition("table_name", ColumnType.String),
                 new ColumnDefinition("root_page_id", ColumnType.Int64),
                 new ColumnDefinition("schema_blob", ColumnType.Blob)

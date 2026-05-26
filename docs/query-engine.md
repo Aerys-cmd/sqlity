@@ -7,10 +7,10 @@ Sqlity now includes a small executable query layer on top of the storage engine.
 - tokenize a very small SQL subset
 - parse `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
 - bind table and column names against catalog metadata
-- convert SQL literals into storage-backed row values
+- convert SQL literals (including `NULL`) into storage-backed row values
 - execute primary-key lookup, full table iteration, row deletion, and row update
 - evaluate `INNER JOIN` and `LEFT JOIN` with flat column contexts
-- evaluate compound `WHERE` expressions with `AND`/`OR` and all comparison operators
+- evaluate compound `WHERE` expressions with `AND`/`OR`, all comparison operators, and `IS NULL` / `IS NOT NULL`
 
 ## Supported SQL surface
 
@@ -22,6 +22,7 @@ Supported shape:
 CREATE TABLE users (
     id INT64 PRIMARY KEY,
     name STRING,
+    score INT64 NOT NULL,
     is_active BOOLEAN
 );
 ```
@@ -31,20 +32,25 @@ Rules:
 - exactly one inline `PRIMARY KEY` column is required
 - the primary key must resolve to `INT64`
 - type aliases are intentionally narrow: `INT64`/`INTEGER`/`BIGINT`, `STRING`/`TEXT`, `BLOB`, `BOOLEAN`/`BOOL`
+- columns are **nullable by default**; add `NOT NULL` to reject null values; `PRIMARY KEY` implies `NOT NULL`
 
 ### `INSERT`
 
 Supported shapes:
 
 ```sql
-INSERT INTO users VALUES (1, 'Ada', TRUE);
+INSERT INTO users VALUES (1, 'Ada', 90, TRUE);
 INSERT INTO users (is_active, name, id) VALUES (FALSE, 'Linus', 2);
+INSERT INTO users (id) VALUES (3);          -- omitted nullable columns default to NULL
+INSERT INTO users VALUES (4, NULL, 95, TRUE); -- explicit NULL literal
 ```
 
 Rules:
 
-- every column must receive a value because `NULL` is not supported yet
 - duplicate primary keys are rejected
+- `NULL` is a valid literal for any nullable column
+- omitting a nullable column in the named-column form inserts `NULL` for that column
+- omitting a `NOT NULL` column in the named-column form throws an error
 - blob literals use hex syntax like `X'CAFE'`
 
 ### `SELECT`
@@ -128,10 +134,12 @@ Rules:
 `WHERE` clauses accept a fully composable expression tree:
 
 - **comparison operators**: `=`, `<>`, `<`, `>`, `<=`, `>=`
+- **null checks**: `IS NULL`, `IS NOT NULL`
 - **logical operators**: `AND`, `OR`
 - **grouping**: parentheses to control evaluation order
 - **column references**: bare names or table-qualified names (`table.column`)
 - blob columns support only `=` and `<>`
+- comparisons involving a `NULL` operand always evaluate to false (three-valued logic)
 
 Examples:
 
@@ -142,13 +150,15 @@ WHERE val = 1 OR val = 9
 WHERE a = 1 AND (b = 0 OR b = 1)
 WHERE score >= 75
 WHERE users.id = 1
+WHERE name IS NULL
+WHERE score IS NOT NULL
 ```
 
 ## Deliberate limitations
 
 - no grouping, ordering, or aggregates
 - no `ALTER TABLE`
-- no table constraints beyond the inline primary key
+- no table constraints beyond the inline primary key and `NOT NULL`
 - no query planner: execution maps almost directly to storage operations
 
 These constraints are intentional. The goal of this milestone is to connect SQL text to the persisted catalog and row/page storage without hiding the mechanics behind a large abstraction layer.
@@ -173,4 +183,3 @@ The current runtime limits are:
 
 - `WHERE` on non-primary-key columns performs a full table scan
 - no subqueries, aggregates, or window functions
-- no `NULL` support

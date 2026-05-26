@@ -113,6 +113,9 @@ internal static class SqlTokenizer
             "LEFT" => SqlTokenKind.Left,
             "JOIN" => SqlTokenKind.Join,
             "ON" => SqlTokenKind.On,
+            "NULL" => SqlTokenKind.Null,
+            "IS" => SqlTokenKind.Is,
+            "NOT" => SqlTokenKind.Not,
             _ => SqlTokenKind.Identifier
         };
 
@@ -234,5 +237,8 @@ internal enum SqlTokenKind
     Left = 34,
     Join = 35,
     On = 36,
-    Dot = 37
+    Dot = 37,
+    Null = 38,
+    Is = 39,
+    Not = 40
 }

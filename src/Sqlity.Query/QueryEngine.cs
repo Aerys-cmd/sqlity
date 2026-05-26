@@ -63,9 +63,11 @@ public sealed class QueryEngine : IDisposable
         for (var index = 0; index < statement.Columns.Count; index++)
         {
             var column = statement.Columns[index];
-            columns[index] = new ColumnDefinition(column.Name, ResolveColumnType(column.TypeName));
+            var isPrimaryKey = column.IsPrimaryKey;
+            var isNullable = !column.IsNotNull && !isPrimaryKey;
+            columns[index] = new ColumnDefinition(column.Name, ResolveColumnType(column.TypeName), isNullable);
 
-            if (column.IsPrimaryKey)
+            if (isPrimaryKey)
             {
                 if (primaryKeyOrdinal >= 0)
                 {
@@ -299,9 +301,18 @@ public sealed class QueryEngine : IDisposable
             assignedColumns[ordinal] = true;
         }
 
-        if (assignedColumns.Any(assigned => !assigned))
+        for (var index = 0; index < assignedColumns.Length; index++)
         {
-            throw new InvalidOperationException("INSERT must provide values for every column because NULL is not supported yet.");
+            if (!assignedColumns[index])
+            {
+                if (!table.Schema.Columns[index].IsNullable)
+                {
+                    throw new InvalidOperationException(
+                        $"Column '{table.Schema.Columns[index].Name}' is NOT NULL and must be provided in the INSERT statement.");
+                }
+
+                boundValues[index] = null;
+            }
         }
 
         return boundValues;
@@ -379,9 +390,15 @@ public sealed class QueryEngine : IDisposable
             ComparisonExpression cmp =>
                 EvaluateComparison(row[ResolveColumn(cmp.TableName, cmp.ColumnName, context)], cmp.Op, cmp.Value.Value),
 
+            NullCheckExpression nullCheck =>
+                EvaluateNullCheck(row[ResolveColumn(nullCheck.TableName, nullCheck.ColumnName, context)], nullCheck.ExpectNull),
+
             _ => throw new InvalidOperationException($"Unknown WHERE expression type '{filter.GetType().Name}'.")
         };
     }
+
+    private static bool EvaluateNullCheck(object? columnValue, bool expectNull) =>
+        expectNull ? columnValue is null : columnValue is not null;
 
     private static int ResolveColumn(
         string? tableName,
@@ -412,9 +429,10 @@ public sealed class QueryEngine : IDisposable
         };
     }
 
-    private static bool EvaluateComparison(object? columnValue, ComparisonOp op, object literalValue)
+    private static bool EvaluateComparison(object? columnValue, ComparisonOp op, object? literalValue)
     {
-        if (columnValue is null)
+        // Standard SQL NULL semantics: any comparison involving NULL is unknown (treated as false).
+        if (columnValue is null || literalValue is null)
             return false;
 
         if (columnValue is byte[] columnBytes)
@@ -538,8 +556,19 @@ public sealed class QueryEngine : IDisposable
         return left.Equals(right);
     }
 
-    private static object ConvertLiteral(ColumnDefinition column, SqlLiteral literal) =>
-        column.Type switch
+    private static object? ConvertLiteral(ColumnDefinition column, SqlLiteral literal)
+    {
+        if (literal.Value is null)
+        {
+            if (!column.IsNullable)
+            {
+                throw new InvalidOperationException($"Cannot assign NULL to non-nullable column '{column.Name}'.");
+            }
+
+            return null;
+        }
+
+        return column.Type switch
         {
             ColumnType.Int64 when literal.Value is long longValue => longValue,
             ColumnType.String when literal.Value is string stringValue => stringValue,
@@ -547,6 +576,7 @@ public sealed class QueryEngine : IDisposable
             ColumnType.Boolean when literal.Value is bool boolValue => boolValue,
             _ => throw new InvalidOperationException($"Value '{literal.Value}' is not valid for column '{column.Name}' of type {column.Type}.")
         };
+    }
 
     private static ColumnType ResolveColumnType(string typeName) =>
         typeName.ToUpperInvariant() switch

@@ -43,14 +43,21 @@ internal sealed class SqlParser
             var columnName = ExpectIdentifier("Expected a column name in the CREATE TABLE column list.");
             var typeName = ExpectIdentifier("Expected a type name after the column name.");
             var isPrimaryKey = false;
+            var isNotNull = false;
 
             if (Match(SqlTokenKind.Primary))
             {
                 Expect(SqlTokenKind.Key);
                 isPrimaryKey = true;
+                isNotNull = true;
+            }
+            else if (Match(SqlTokenKind.Not))
+            {
+                Expect(SqlTokenKind.Null);
+                isNotNull = true;
             }
 
-            columns.Add(new ColumnSpecification(columnName, typeName, isPrimaryKey));
+            columns.Add(new ColumnSpecification(columnName, typeName, isPrimaryKey, isNotNull));
         }
         while (Match(SqlTokenKind.Comma));
 
@@ -237,6 +244,18 @@ internal sealed class SqlParser
             columnName = ExpectIdentifier("Expected a column name after '.' in the WHERE condition.");
         }
 
+        if (Match(SqlTokenKind.Is))
+        {
+            if (Match(SqlTokenKind.Not))
+            {
+                Expect(SqlTokenKind.Null);
+                return new NullCheckExpression(tableName, columnName, ExpectNull: false);
+            }
+
+            Expect(SqlTokenKind.Null);
+            return new NullCheckExpression(tableName, columnName, ExpectNull: true);
+        }
+
         var op = ParseComparisonOp();
         var value = ParseLiteral();
         return new ComparisonExpression(tableName, columnName, op, value);
@@ -279,6 +298,7 @@ internal sealed class SqlParser
             SqlTokenKind.BlobLiteral => new SqlLiteral((byte[])(token.Value ?? Array.Empty<byte>())),
             SqlTokenKind.True => new SqlLiteral(true),
             SqlTokenKind.False => new SqlLiteral(false),
+            SqlTokenKind.Null => new SqlLiteral(null),
             _ => throw new InvalidOperationException($"Expected a literal value, but found '{token.Lexeme}'.")
         };
     }
@@ -338,7 +358,7 @@ internal sealed record UpdateStatement(string TableName, IReadOnlyList<ColumnAss
 
 internal sealed record ColumnAssignment(string ColumnName, SqlLiteral Value);
 
-internal sealed record ColumnSpecification(string Name, string TypeName, bool IsPrimaryKey);
+internal sealed record ColumnSpecification(string Name, string TypeName, bool IsPrimaryKey, bool IsNotNull = false);
 
 internal sealed record ColumnReference(string? TableName, string ColumnName);
 
@@ -356,8 +376,10 @@ internal sealed record ComparisonExpression(string? TableName, string ColumnName
 
 internal sealed record BinaryLogicalExpression(WhereExpression Left, LogicalOp Op, WhereExpression Right) : WhereExpression;
 
+internal sealed record NullCheckExpression(string? TableName, string ColumnName, bool ExpectNull) : WhereExpression;
+
 internal enum ComparisonOp { Equals, NotEquals, LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals }
 
 internal enum LogicalOp { And, Or }
 
-internal sealed record SqlLiteral(object Value);
+internal sealed record SqlLiteral(object? Value);

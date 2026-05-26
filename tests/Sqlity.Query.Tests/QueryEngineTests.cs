@@ -732,4 +732,123 @@ public sealed class JoinTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    // ── NULL support ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void QueryEngine_insert_values_null_literal_stores_null()
+    {
+        using var engine = CreateEngine(out var path);
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, label STRING);");
+            engine.Execute("INSERT INTO t VALUES (1, NULL);");
+
+            var result = engine.Execute("SELECT id, label FROM t;");
+
+            Assert.Single(result.Rows);
+            Assert.Equal(1L, result.Rows[0][0]);
+            Assert.Null(result.Rows[0][1]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void QueryEngine_insert_named_columns_defaults_omitted_nullable_to_null()
+    {
+        using var engine = CreateEngine(out var path);
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, label STRING);");
+            engine.Execute("INSERT INTO t (id) VALUES (1);");
+
+            var result = engine.Execute("SELECT id, label FROM t;");
+
+            Assert.Single(result.Rows);
+            Assert.Equal(1L, result.Rows[0][0]);
+            Assert.Null(result.Rows[0][1]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void QueryEngine_insert_null_into_not_null_column_throws()
+    {
+        using var engine = CreateEngine(out var path);
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, label STRING NOT NULL);");
+
+            Assert.Throws<InvalidOperationException>(
+                () => engine.Execute("INSERT INTO t VALUES (1, NULL);"));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void QueryEngine_where_is_null_returns_matching_rows()
+    {
+        using var engine = CreateEngine(out var path);
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, label STRING);");
+            engine.Execute("INSERT INTO t VALUES (1, NULL);");
+            engine.Execute("INSERT INTO t VALUES (2, 'hello');");
+
+            var result = engine.Execute("SELECT id FROM t WHERE label IS NULL;");
+
+            Assert.Single(result.Rows);
+            Assert.Equal(1L, result.Rows[0][0]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void QueryEngine_where_is_not_null_returns_matching_rows()
+    {
+        using var engine = CreateEngine(out var path);
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, label STRING);");
+            engine.Execute("INSERT INTO t VALUES (1, NULL);");
+            engine.Execute("INSERT INTO t VALUES (2, 'hello');");
+
+            var result = engine.Execute("SELECT id FROM t WHERE label IS NOT NULL;");
+
+            Assert.Single(result.Rows);
+            Assert.Equal(2L, result.Rows[0][0]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void QueryEngine_comparison_with_null_never_matches()
+    {
+        using var engine = CreateEngine(out var path);
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, label STRING);");
+            engine.Execute("INSERT INTO t VALUES (1, NULL);");
+
+            // col = NULL is false per SQL semantics (three-valued logic).
+            var result = engine.Execute("SELECT id FROM t WHERE label = NULL;");
+
+            Assert.Empty(result.Rows);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void QueryEngine_insert_named_columns_throws_when_not_null_column_omitted()
+    {
+        using var engine = CreateEngine(out var path);
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, label STRING NOT NULL);");
+
+            Assert.Throws<InvalidOperationException>(
+                () => engine.Execute("INSERT INTO t (id) VALUES (1);"));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

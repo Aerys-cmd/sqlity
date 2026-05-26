@@ -24,8 +24,16 @@ public sealed class TableSchema
             throw new NotSupportedException("The initial storage engine only supports Int64 primary keys.");
         }
 
+        // Primary keys are always non-nullable; coerce silently so callers that omit
+        // IsNullable (which defaults to true) aren't penalised.
+        var cols = columns.ToArray();
+        if (cols[primaryKeyOrdinal].IsNullable)
+        {
+            cols[primaryKeyOrdinal] = cols[primaryKeyOrdinal] with { IsNullable = false };
+        }
+
         TableName = tableName;
-        Columns = columns.ToArray();
+        Columns = cols;
         PrimaryKeyOrdinal = primaryKeyOrdinal;
         _columnOrdinals = BuildColumnOrdinals(Columns);
     }

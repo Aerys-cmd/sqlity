@@ -1,4 +1,5 @@
 using Sqlity.Storage.Catalog;
+using Sqlity.Storage.IO;
 using Sqlity.Storage.Rows;
 
 namespace Sqlity.Storage.Tests;
@@ -260,6 +261,111 @@ public sealed class BTreeMultiPageTests
             for (var i = 0; i < rowCount; i++)
             {
                 Assert.Equal((long)(i + 1), rows[i][0]);
+            }
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    // ── Page recycling ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// After a split produces two leaf pages and then all rows on one of them
+    /// are deleted, the freed page should appear in the free list.
+    /// </summary>
+    [Fact]
+    public void Delete_emptied_leaf_page_is_returned_to_free_list()
+    {
+        var path = TempPath();
+        try
+        {
+            // Use a wide schema with enough rows to force a split into at least two leaves.
+            // 300 wide rows (~40 bytes each) well exceeds a single 4 KB leaf.
+            const int rowCount = 300;
+            using (var storage = StorageEngine.Open(path))
+            {
+                storage.CreateTable(WideSchema());
+                InsertRange(storage, "t", rowCount);
+
+                // Delete ALL rows — every leaf should eventually be recycled except the
+                // root leaf that gets reformatted when the last child reference is removed.
+                for (var i = 1; i <= rowCount; i++)
+                {
+                    storage.Delete("t", i);
+                }
+            }
+
+            // Inspect the free list via FilePager after the engine is closed.
+            using var pager = new FilePager(path);
+            var header = pager.ReadDatabaseHeader();
+
+            // At least one leaf page should have been freed.
+            Assert.True(header.FreePageCount > 0,
+                $"Expected freed pages after deleting all rows, but FreePageCount is {header.FreePageCount}.");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// After a split and full delete cycle the tree should still read correctly
+    /// (returns an empty result set, not an exception).
+    /// </summary>
+    [Fact]
+    public void ReadAll_after_full_delete_cycle_returns_empty()
+    {
+        var path = TempPath();
+        try
+        {
+            const int rowCount = 300;
+            using var storage = StorageEngine.Open(path);
+            storage.CreateTable(WideSchema());
+            InsertRange(storage, "t", rowCount);
+
+            for (var i = 1; i <= rowCount; i++)
+            {
+                storage.Delete("t", i);
+            }
+
+            var rows = storage.ReadAll("t");
+
+            Assert.Empty(rows);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    /// <summary>
+    /// A freed leaf page should be reused by the next allocation. We verify this
+    /// by checking that all rows are readable after a delete-then-reinsert cycle,
+    /// which exercises the full free-list path without needing direct file access.
+    /// </summary>
+    [Fact]
+    public void Freed_leaf_page_is_reused_on_next_allocation()
+    {
+        var path = TempPath();
+        try
+        {
+            const int rowCount = 300;
+
+            // Phase 1: Insert rows, delete all (frees pages into the free list).
+            using (var storage = StorageEngine.Open(path))
+            {
+                storage.CreateTable(WideSchema());
+                InsertRange(storage, "t", rowCount);
+
+                for (var i = 1; i <= rowCount; i++)
+                {
+                    storage.Delete("t", i);
+                }
+            }
+
+            // Phase 2: Re-open and reinsert the same number of rows.
+            // The engine must reuse freed pages without errors.
+            using (var storage = StorageEngine.Open(path))
+            {
+                InsertRange(storage, "t", rowCount, namePrefix: "new");
+
+                // All re-inserted rows must be readable.
+                var rows = storage.ReadAll("t");
+                Assert.Equal(rowCount, rows.Count);
             }
         }
         finally { if (File.Exists(path)) File.Delete(path); }

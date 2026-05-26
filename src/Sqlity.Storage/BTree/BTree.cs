@@ -55,7 +55,7 @@ internal sealed class BPlusTree
 
     public void Delete(long primaryKey)
     {
-        var (leaf, _, _) = FindLeaf(primaryKey);
+        var (leaf, leafPageId, ancestors) = FindLeaf(primaryKey);
         var status = leaf.TryDelete(primaryKey);
 
         if (status == TableLeafDeleteStatus.NotFound)
@@ -64,6 +64,11 @@ internal sealed class BPlusTree
         }
 
         _pager.WritePage(leaf.Page);
+
+        if (leaf.CellCount == 0 && ancestors.Count > 0)
+        {
+            ReclaimEmptyLeaf(leafPageId, leaf, ancestors);
+        }
     }
 
     public bool TryGet(long primaryKey, out TableLeafCell cell)
@@ -334,6 +339,62 @@ internal sealed class BPlusTree
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Called after a delete has emptied <paramref name="emptyLeafPageId"/>. Updates the
+    /// leaf chain, removes the reference from the parent internal page, handles tree
+    /// collapse when the parent becomes childless, and releases the now-unused page.
+    /// </summary>
+    private void ReclaimEmptyLeaf(
+        uint emptyLeafPageId,
+        TableLeafPage emptyLeaf,
+        Stack<BTreeAncestor> ancestors)
+    {
+        // ── 1. Update the leaf chain ──────────────────────────────────────────
+        // Find the predecessor leaf (the one whose NextLeafPageId points to the empty leaf).
+        // If the empty leaf is the chain head there is no predecessor page to update.
+        var firstLeafPageId = FindFirstLeafPageId();
+        if (firstLeafPageId != emptyLeafPageId)
+        {
+            var currentPageId = firstLeafPageId;
+            while (currentPageId != 0)
+            {
+                var current = new TableLeafPage(_pager.ReadPage(currentPageId));
+                if (current.NextLeafPageId == emptyLeafPageId)
+                {
+                    current.SetNextLeafPageId(emptyLeaf.NextLeafPageId);
+                    _pager.WritePage(current.Page);
+                    break;
+                }
+
+                currentPageId = current.NextLeafPageId;
+            }
+        }
+
+        // ── 2. Remove child reference from parent ─────────────────────────────
+        var parentPageId = ancestors.Pop().PageId;
+        var parent = new TableInternalPage(_pager.ReadPage(parentPageId));
+        var removeStatus = parent.TryRemoveChildReference(emptyLeafPageId);
+
+        if (removeStatus == RemoveChildStatus.LastChildRemoved)
+        {
+            // The parent lost its only child. If the parent IS the root, reformat it as an
+            // empty leaf so the tree returns to a single-page state.
+            if (ancestors.Count == 0)
+            {
+                var emptyRoot = TableLeafPage.Create(_rootPageId);
+                _pager.WritePage(emptyRoot.Page);
+            }
+            // Non-root parents with 0 children are a known limitation (not collapsed further).
+        }
+        else
+        {
+            _pager.WritePage(parent.Page);
+        }
+
+        // ── 3. Return the empty leaf to the free list ─────────────────────────
+        _pager.ReleasePage(emptyLeafPageId);
+    }
 
     /// <summary>
     /// Chooses a split index based on cumulative byte size so that variable-length payloads
