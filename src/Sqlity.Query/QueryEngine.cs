@@ -126,7 +126,11 @@ public sealed class QueryEngine : IDisposable
                     .ToArray();
             }
 
-            return QueryExecutionResult.WithRows(projectedColumns, projectedRows);
+            var projectedColumnTypes = selectedOrdinals
+                .Select(i => fromTable.Schema.Columns[i].Type)
+                .ToArray();
+
+            return QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
         }
 
         return ExecuteSelectWithJoins(fromTable, statement);
@@ -186,13 +190,13 @@ public sealed class QueryEngine : IDisposable
             filteredRows = currentRows.Where(row => EvaluateWhereInContext(statement.Filter, row, context));
         }
 
-        var (selectedIndices, outputColumnNames) = BindJoinColumns(statement.Columns, context);
+        var (selectedIndices, outputColumnNames, outputColumnTypes) = BindJoinColumns(statement.Columns, context);
 
         var projectedRows2 = filteredRows
             .Select(row => selectedIndices.Select(i => row[i]).ToArray())
             .ToArray();
 
-        return QueryExecutionResult.WithRows(outputColumnNames, projectedRows2);
+        return QueryExecutionResult.WithRows(outputColumnNames, projectedRows2, outputColumnTypes);
     }
 
     private QueryExecutionResult ExecuteDelete(DeleteStatement statement)
@@ -512,23 +516,27 @@ public sealed class QueryEngine : IDisposable
         return entry;
     }
 
-    private static (int[] Indices, string[] Names) BindJoinColumns(
+    private static (int[] Indices, string[] Names, ColumnType[] Types) BindJoinColumns(
         IReadOnlyList<ColumnReference>? columns,
         IReadOnlyList<(TableInfo Table, int Offset)> context)
     {
+        var flatTypes = BuildFlatTypeArray(context);
+
         if (columns is null)
         {
             var allIndices = new List<int>();
             var allNames = new List<string>();
+            var allTypes = new List<ColumnType>();
             foreach (var (table, offset) in context)
             {
                 for (var i = 0; i < table.Schema.Columns.Count; i++)
                 {
                     allIndices.Add(offset + i);
                     allNames.Add($"{table.TableName}.{table.Schema.Columns[i].Name}");
+                    allTypes.Add(table.Schema.Columns[i].Type);
                 }
             }
-            return (allIndices.ToArray(), allNames.ToArray());
+            return (allIndices.ToArray(), allNames.ToArray(), allTypes.ToArray());
         }
 
         if (columns.Count == 0)
@@ -536,6 +544,7 @@ public sealed class QueryEngine : IDisposable
 
         var indices = new int[columns.Count];
         var names = new string[columns.Count];
+        var types = new ColumnType[columns.Count];
         for (var i = 0; i < columns.Count; i++)
         {
             var col = columns[i];
@@ -543,9 +552,20 @@ public sealed class QueryEngine : IDisposable
             names[i] = col.TableName is not null
                 ? $"{col.TableName}.{col.ColumnName}"
                 : col.ColumnName;
+            types[i] = flatTypes[indices[i]];
         }
 
-        return (indices, names);
+        return (indices, names, types);
+    }
+
+    private static ColumnType[] BuildFlatTypeArray(IReadOnlyList<(TableInfo Table, int Offset)> context)
+    {
+        var totalCols = context.Sum(e => e.Table.Schema.Columns.Count);
+        var flatTypes = new ColumnType[totalCols];
+        foreach (var (table, offset) in context)
+            for (var i = 0; i < table.Schema.Columns.Count; i++)
+                flatTypes[offset + i] = table.Schema.Columns[i].Type;
+        return flatTypes;
     }
 
     private static bool ValuesEqual(object? left, object? right)

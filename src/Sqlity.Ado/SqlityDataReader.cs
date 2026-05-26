@@ -99,11 +99,14 @@ public sealed class SqlityDataReader : DbDataReader
 
     public override Type GetFieldType(int ordinal)
     {
-        if (_result.Rows.Count > 0)
+        if (_result.ColumnTypes.Count > 0)
+            return TypeMap.ToClrType(_result.ColumnTypes[ordinal]);
+
+        // Fallback: sniff type from first non-null row value.
+        foreach (var row in _result.Rows)
         {
-            var value = _result.Rows[0][ordinal];
-            if (value is not null)
-                return value.GetType();
+            if (row[ordinal] is not null)
+                return row[ordinal]!.GetType();
         }
         return typeof(object);
     }

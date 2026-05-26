@@ -365,6 +365,102 @@ public sealed class SqlityDataReaderTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    [Fact]
+    public void Reader_GetFieldType_returns_schema_type_even_when_first_row_is_null()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, name STRING);";
+            cmd.ExecuteNonQuery();
+            // Insert with NULL name — first (and only) row has null for 'name'
+            cmd.CommandText = "INSERT INTO t (id) VALUES (1);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT id, name FROM t;";
+            using var reader = cmd.ExecuteReader();
+
+            Assert.Equal(typeof(long),   reader.GetFieldType(0));
+            Assert.Equal(typeof(string), reader.GetFieldType(1));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Reader_GetFieldType_returns_schema_type_on_empty_result_set()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, flag BOOLEAN);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT id, flag FROM t;";
+            using var reader = cmd.ExecuteReader();
+
+            Assert.False(reader.HasRows);
+            Assert.Equal(typeof(long),   reader.GetFieldType(0));
+            Assert.Equal(typeof(bool),   reader.GetFieldType(1));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Reader_IsDBNull_true_for_nullable_column_with_null_value()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, val STRING);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "INSERT INTO t (id) VALUES (10);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT id, val FROM t;";
+            using var reader = cmd.ExecuteReader();
+
+            Assert.True(reader.Read());
+            Assert.False(reader.IsDBNull(0));
+            Assert.True(reader.IsDBNull(1));
+            Assert.Equal(DBNull.Value, reader.GetValue(1));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Reader_GetFieldType_preserves_types_across_join_columns()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE orders (id INT64 PRIMARY KEY, amount INT64);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "CREATE TABLE flags (id INT64 PRIMARY KEY, active BOOLEAN);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "INSERT INTO orders VALUES (1, 100);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "INSERT INTO flags VALUES (1, TRUE);";
+            cmd.ExecuteNonQuery();
+
+            cmd.CommandText = "SELECT orders.id, orders.amount, flags.active FROM orders JOIN flags ON orders.id = flags.id;";
+            using var reader = cmd.ExecuteReader();
+
+            Assert.Equal(typeof(long),   reader.GetFieldType(0));
+            Assert.Equal(typeof(long),   reader.GetFieldType(1));
+            Assert.Equal(typeof(bool),   reader.GetFieldType(2));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }
 
 public sealed class SqlityTransactionTests
