@@ -10,6 +10,7 @@
     <Project Path="src/Sqlity.Storage/Sqlity.Storage.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Sqlity.Ado.Tests/Sqlity.Ado.Tests.csproj" />
     <Project Path="tests/Sqlity.Cli.Tests/Sqlity.Cli.Tests.csproj" />
     <Project Path="tests/Sqlity.Query.Tests/Sqlity.Query.Tests.csproj" />
     <Project Path="tests/Sqlity.Storage.Tests/Sqlity.Storage.Tests.csproj" />

@@ -11,7 +11,7 @@ Sqlity is an educational SQLite-like embedded database engine written in C# for 
 
 ## Current milestone
 
-The repository now contains a single-page storage engine plus an executable SQL layer:
+The repository now contains a storage engine, an executable SQL layer, and a complete ADO.NET provider:
 
 - a single-file database format
 - a fixed 4096-byte page model
@@ -23,7 +23,9 @@ The repository now contains a single-page storage engine plus an executable SQL 
 - slotted-page compaction on delete (correct pointer array and cell content compaction)
 - in-place and resize-safe row updates
 - SQL execution for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
-- storage and query test coverage plus updated architecture documentation
+- `INNER JOIN` and `LEFT JOIN` with compound `WHERE` expressions
+- full ADO.NET provider: `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`
+- storage, query, CLI, and ADO.NET test coverage
 
 ## Repository layout
 
@@ -32,11 +34,12 @@ src/
   Sqlity.Core      Shared constants and future cross-layer primitives
   Sqlity.Storage   File format, catalog persistence, row encoding, pager, and single-page table storage
   Sqlity.Query     MVP SQL parsing, binding, and execution
-  Sqlity.Ado       Planned ADO.NET provider
+  Sqlity.Ado       ADO.NET provider (DbConnection, DbCommand, DbDataReader)
   Sqlity.EFCore    Planned EF Core provider
 samples/
   Sqlity.Cli       Tiny console app for opening a `.sqlity` file and executing one SQL statement
 tests/
+  Sqlity.Ado.Tests
   Sqlity.Cli.Tests
   Sqlity.Query.Tests
   Sqlity.Storage.Tests
@@ -75,7 +78,7 @@ Sqlity uses:
 
 1. Add root-page search and page split behavior for the B-tree path.
 2. ~~Add delete/compaction behavior for table leaf pages.~~ ✅ Done — `DELETE` and `UPDATE` are fully implemented with correct slotted-page compaction.
-3. Expose the engine through an ADO.NET provider.
+3. ~~Expose the engine through an ADO.NET provider.~~ ✅ Done — `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, and `SqlityParameter` are implemented.
 4. Add an EF Core provider after the ADO.NET provider is stable.
 5. Add transactions, then WAL, once the base storage design is solid.
 
@@ -84,11 +87,57 @@ Sqlity uses:
 - `docs/architecture.md` explains how the layers fit together.
 - `docs/storage-engine.md` explains the page model, on-disk layout, and roadmap in detail.
 - `docs/query-engine.md` explains the current SQL surface and its deliberate MVP limits.
-- `docs/next-roadmap.md` captures the next concrete milestones after this query/storage step.
+- `docs/ado-provider.md` explains the ADO.NET provider API and how it wraps the query engine.
+- `docs/next-roadmap.md` captures the next concrete milestones.
 
 ## Creating your own database
 
-The current easiest way to create or reopen a Sqlity database is through `QueryEngine`. Passing a file path creates the database if it does not exist yet, then subsequent `Execute(...)` calls run against the same file.
+### Via ADO.NET (recommended)
+
+The ADO.NET provider is the standard way to interact with Sqlity from .NET code. Use
+`SqlityConnection` with a `Data Source=` connection string, then work with the familiar
+`DbCommand` and `DbDataReader` API.
+
+```csharp
+using System.Data.Common;
+using Sqlity.Ado;
+
+using var conn = new SqlityConnection("Data Source=demo.sqlity");
+conn.Open();
+
+using (var cmd = conn.CreateCommand())
+{
+    cmd.CommandText = """
+        CREATE TABLE users (
+            id    INT64   PRIMARY KEY,
+            name  STRING,
+            active BOOLEAN
+        );
+        """;
+    cmd.ExecuteNonQuery();
+}
+
+using (var cmd = conn.CreateCommand())
+{
+    cmd.CommandText = "INSERT INTO users VALUES (1, 'Ada', TRUE);";
+    cmd.ExecuteNonQuery();
+    cmd.CommandText = "INSERT INTO users VALUES (2, 'Linus', FALSE);";
+    cmd.ExecuteNonQuery();
+}
+
+using (var cmd = conn.CreateCommand())
+{
+    cmd.CommandText = "SELECT id, name FROM users;";
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+        Console.WriteLine($"{reader.GetInt64(0)}: {reader.GetString(1)}");
+}
+```
+
+### Via QueryEngine (lower-level)
+
+You can also work directly with `QueryEngine`. Passing a file path creates the database if it
+does not exist yet, then subsequent `Execute(...)` calls run against the same file.
 
 ```csharp
 using Sqlity.Query;
@@ -120,8 +169,10 @@ engine.Execute("DELETE FROM users WHERE id = 2;");
 Current limits to keep in mind:
 
 - supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE`
-- `WHERE` currently supports only equality on the primary-key column
-- rows still need to fit inside a single table leaf page because page splits are not implemented yet
+- `WHERE` supports any column with full `AND`/`OR` composition; primary-key equality uses a B+ tree point lookup, all other filters fall back to a full scan
+- no `NULL` support, no aggregates, no `ORDER BY`, no subqueries
+
+That file path is the database. If `my-db.sqlity` does not exist, Sqlity creates it; if it exists, Sqlity reopens it.
 
 **How you can create your own DB and query it today:**
 
@@ -134,8 +185,6 @@ engine.Execute("INSERT INTO users VALUES (1, 'Ada', TRUE);");
 
 var result = engine.Execute("SELECT id, name FROM users WHERE id = 1;");
 ```
-
-That file path is the database. If `my-db.sqlity` does not exist, Sqlity creates it; if it exists, Sqlity reopens it.
 
 ### Tiny CLI workflow
 

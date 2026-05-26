@@ -2,11 +2,11 @@
 
 The storage and core query layer is in place: B+ tree with multi-page support, full CRUD, compound `WHERE`, and `JOIN`. The next steps close correctness gaps, widen the SQL surface, and wire up the public provider APIs.
 
-## 1. ADO.NET provider
+## 1. ADO.NET provider ✅
 
-- expose `DbConnection`, `DbCommand`, and `DbDataReader`
-- adapt the existing `QueryEngine` result model instead of duplicating execution logic
-- surface table metadata and column ordinals through provider-friendly APIs
+- expose `DbConnection`, `DbCommand`, and `DbDataReader` — **done**
+- adapt the existing `QueryEngine` result model instead of duplicating execution logic — **done**
+- surface table metadata and column ordinals through provider-friendly APIs — **done**
 
 ## 2. Correctness gaps
 

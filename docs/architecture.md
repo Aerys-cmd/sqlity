@@ -30,5 +30,5 @@ Owns EF Core metadata mapping, query translation, migrations integration strateg
 - `Sqlity.Core`: started
 - `Sqlity.Storage`: multi-page B+ tree storage engine, persisted catalog, full row DML (insert/delete/update) with slotted-page compaction, leaf-page splits, internal-page splits, and stable root promotion implemented
 - `Sqlity.Query`: SQL parser and executor for `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, and `UPDATE` implemented
-- `Sqlity.Ado`: documented, code not implemented yet
+- `Sqlity.Ado`: fully implemented — `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`, `SqlityParameterCollection`, `SqlityTransaction` (stub)
 - `Sqlity.EFCore`: documented, code not implemented yet
