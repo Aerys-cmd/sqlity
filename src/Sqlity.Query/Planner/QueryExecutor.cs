@@ -20,6 +20,7 @@ internal sealed class QueryExecutor
     {
         PhysicalFullScan scan => ExecuteFullScan(scan),
         PhysicalIndexSeek seek => ExecuteIndexSeek(seek),
+        PhysicalIndexOrderedScan ordered => ExecuteIndexOrderedScan(ordered),
         _ => throw new InvalidOperationException($"Unknown physical plan type '{plan.GetType().Name}'.")
     };
 
@@ -48,6 +49,27 @@ internal sealed class QueryExecutor
             if (plan.PostFilter is null || Evaluate(plan.PostFilter, row, context))
                 rows.Add(row);
         }
+
+        return rows;
+    }
+
+    private IReadOnlyList<object?[]> ExecuteIndexOrderedScan(PhysicalIndexOrderedScan plan)
+    {
+        var pks = _storage.ScanIndexAllOrdered(plan.Index);
+        var context = new[] { (Table: plan.Table, Offset: 0) };
+        var rows = new List<object?[]>(pks.Count);
+
+        foreach (var pk in pks)
+        {
+            if (!_storage.TryReadByPrimaryKey(plan.Table.TableName, pk, out var row) || row is null)
+                continue;
+
+            if (plan.PostFilter is null || Evaluate(plan.PostFilter, row, context))
+                rows.Add(row);
+        }
+
+        if (plan.Descending)
+            rows.Reverse();
 
         return rows;
     }

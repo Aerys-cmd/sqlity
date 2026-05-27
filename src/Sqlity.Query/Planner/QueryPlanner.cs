@@ -17,50 +17,107 @@ internal sealed class QueryPlanner
         _storage = storage;
     }
 
-    public PhysicalPlan Plan(TableInfo table, WhereExpression? filter)
+    public PhysicalPlan Plan(TableInfo table, WhereExpression? filter) =>
+        Plan(table, filter, orderBy: null);
+
+    /// <summary>
+    /// Plans a single-table scan, optionally exploiting an index to satisfy ORDER BY
+    /// without an in-memory sort.
+    /// </summary>
+    public PhysicalPlan Plan(TableInfo table, WhereExpression? filter, IReadOnlyList<OrderByTerm>? orderBy)
     {
-        return BuildPhysical(BuildLogical(table, filter));
+        return BuildPhysical(BuildLogical(table, filter, orderBy));
     }
 
-    private LogicalPlan BuildLogical(TableInfo table, WhereExpression? filter)
+    private LogicalPlan BuildLogical(TableInfo table, WhereExpression? filter, IReadOnlyList<OrderByTerm>? orderBy)
     {
-        if (filter is null)
-            return new LogicalScan(table, null);
-
-        var atoms = FlattenAnds(filter);
+        var atoms = filter is not null ? FlattenAnds(filter) : [];
         var indexes = _storage.GetIndexesForTable(table.TableName);
 
-        IndexInfo? bestIndex = null;
-        int bestScore = 0;
+        // ── Try to satisfy WHERE via an index seek ──────────────────────────────
+        IndexInfo? bestSeekIndex = null;
+        int bestSeekScore = 0;
         IndexSeekRange? bestRange = null;
         List<WhereExpression>? bestPostFilter = null;
 
-        foreach (var index in indexes)
+        if (filter is not null)
         {
-            var (score, range, postFilter) = ScoreIndex(table, index, atoms);
-            if (score > bestScore)
+            foreach (var index in indexes)
             {
-                bestScore = score;
-                bestIndex = index;
-                bestRange = range;
-                bestPostFilter = postFilter;
+                var (score, range, postFilter) = ScoreIndex(table, index, atoms);
+                if (score > bestSeekScore)
+                {
+                    bestSeekScore = score;
+                    bestSeekIndex = index;
+                    bestRange = range;
+                    bestPostFilter = postFilter;
+                }
             }
         }
 
-        if (bestIndex is null || bestRange is null)
-            return new LogicalScan(table, filter);
+        if (bestSeekIndex is not null && bestRange is not null)
+        {
+            var postFilterExpr = bestPostFilter is { Count: > 0 } ? CombineAnds(bestPostFilter) : null;
+            return new LogicalIndexSeek(table, bestSeekIndex, bestRange, postFilterExpr);
+        }
 
-        var postFilterExpr = bestPostFilter is { Count: > 0 }
-            ? CombineAnds(bestPostFilter)
-            : null;
+        // ── Try to satisfy ORDER BY via an ordered index scan ──────────────────
+        if (orderBy is { Count: > 0 })
+        {
+            foreach (var index in indexes)
+            {
+                if (IndexSatisfiesOrderBy(table, index, orderBy))
+                {
+                    // All ORDER BY terms have the same direction; use the first term's direction.
+                    var descending = orderBy[0].Descending;
+                    return new LogicalIndexOrderedScan(table, index, filter, descending);
+                }
+            }
+        }
 
-        return new LogicalIndexSeek(table, bestIndex, bestRange, postFilterExpr);
+        return new LogicalScan(table, filter);
+    }
+
+    /// <summary>
+    /// Returns true if the index's leading columns match the ORDER BY terms (same column names,
+    /// in the same sequence). All ORDER BY terms must share the same direction (all ASC or all DESC),
+    /// and must not exceed the index's column count.
+    /// </summary>
+    private static bool IndexSatisfiesOrderBy(
+        TableInfo table,
+        IndexInfo index,
+        IReadOnlyList<OrderByTerm> orderBy)
+    {
+        if (orderBy.Count > index.Columns.Count)
+            return false;
+
+        // All terms must share the same direction.
+        var firstDescending = orderBy[0].Descending;
+        for (var i = 1; i < orderBy.Count; i++)
+        {
+            if (orderBy[i].Descending != firstDescending)
+                return false;
+        }
+
+        // ORDER BY columns must match the index's leading columns (order and name).
+        for (var i = 0; i < orderBy.Count; i++)
+        {
+            if (!string.Equals(orderBy[i].Column.ColumnName, index.Columns[i], StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            // Column must actually exist in the table.
+            if (!table.Schema.TryGetColumnOrdinal(orderBy[i].Column.ColumnName, out _))
+                return false;
+        }
+
+        return true;
     }
 
     private static PhysicalPlan BuildPhysical(LogicalPlan logical) => logical switch
     {
         LogicalScan scan => new PhysicalFullScan(scan.Table, scan.Filter),
         LogicalIndexSeek seek => new PhysicalIndexSeek(seek.Table, seek.Index, seek.Range, seek.PostFilter),
+        LogicalIndexOrderedScan ordered => new PhysicalIndexOrderedScan(ordered.Table, ordered.Index, ordered.PostFilter, ordered.Descending),
         _ => throw new InvalidOperationException($"Unknown logical plan type '{logical.GetType().Name}'.")
     };
 

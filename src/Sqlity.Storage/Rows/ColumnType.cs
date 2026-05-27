@@ -6,5 +6,6 @@ public enum ColumnType : byte
     Int64 = 1,
     String = 2,
     Blob = 3,
-    Boolean = 4
+    Boolean = 4,
+    Float64 = 5
 }

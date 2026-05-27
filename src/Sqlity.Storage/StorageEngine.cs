@@ -298,6 +298,20 @@ public sealed class StorageEngine : IDisposable
         return entries.Select(e => e.PrimaryKey).ToList();
     }
 
+    /// <summary>
+    /// Scans all entries in <paramref name="index"/> in ascending key order and returns their primary keys.
+    /// </summary>
+    public IReadOnlyList<long> ScanIndexAllOrdered(IndexInfo index)
+    {
+        ArgumentNullException.ThrowIfNull(index);
+
+        var tree = new SecondaryBPlusTree(_pager, index.RootPageId);
+        // An unbounded range (both bounds null) matches every entry.
+        var range = new IndexSeekRange(lowerKey: null, lowerInclusive: true, upperKey: null, upperInclusive: true);
+        var entries = tree.RangeSeek(range);
+        return entries.Select(e => e.PrimaryKey).ToList();
+    }
+
     public void Dispose()
     {
         if (_ownsPager)

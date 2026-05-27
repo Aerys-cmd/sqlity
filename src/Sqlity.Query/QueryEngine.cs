@@ -201,36 +201,35 @@ public sealed class QueryEngine : IDisposable
     {
         var fromTable = _storage.GetTable(statement.TableName);
 
+        // Aggregate queries are handled via a separate path.
+        var hasAggregates = statement.Columns is not null &&
+                            statement.Columns.Any(c => c is AggregateSelectItem);
+        if (hasAggregates || statement.GroupBy is { Count: > 0 })
+            return ExecuteSelectWithAggregation(fromTable, statement);
+
         if (statement.Joins.Count == 0)
         {
-            var selectedOrdinals = BindSingleTableColumns(fromTable.Schema, statement.Columns);
-
-            // Route through the query planner for single-table queries.
-            var plan = _planner.Plan(fromTable, statement.Filter);
+            // Route through the query planner (now ORDER BY-aware).
+            var plan = _planner.Plan(fromTable, statement.Filter, statement.OrderBy);
             var rows = _executor.Execute(plan);
 
-            var projectedRows = rows
+            // Determine whether the plan already delivered ordered rows.
+            var alreadyOrdered = plan is PhysicalIndexOrderedScan;
+
+            IEnumerable<object?[]> rowSeq = rows;
+            if (statement.OrderBy is { Count: > 0 } && !alreadyOrdered)
+            {
+                rowSeq = ApplyOrderBy(rows, statement.OrderBy,
+                    new[] { (Table: fromTable, Offset: 0) });
+            }
+
+            rowSeq = ApplyLimitOffset(rowSeq, statement.Limit, statement.Offset);
+
+            var (selectedOrdinals, projectedColumns, projectedColumnTypes) =
+                BindSingleTableSelectItems(fromTable, statement.Columns);
+
+            var projectedRows = rowSeq
                 .Select(row => selectedOrdinals.Select(i => row[i]).ToArray())
-                .ToArray();
-
-            string[] projectedColumns;
-            if (statement.Columns is null)
-            {
-                projectedColumns = selectedOrdinals
-                    .Select(i => fromTable.Schema.Columns[i].Name)
-                    .ToArray();
-            }
-            else
-            {
-                projectedColumns = statement.Columns
-                    .Select(col => col.TableName is not null
-                        ? $"{col.TableName}.{col.ColumnName}"
-                        : col.ColumnName)
-                    .ToArray();
-            }
-
-            var projectedColumnTypes = selectedOrdinals
-                .Select(i => fromTable.Schema.Columns[i].Type)
                 .ToArray();
 
             return QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
@@ -292,6 +291,11 @@ public sealed class QueryEngine : IDisposable
         {
             filteredRows = currentRows.Where(row => QueryExecutor.Evaluate(statement.Filter, row, context));
         }
+
+        if (statement.OrderBy is { Count: > 0 })
+            filteredRows = ApplyOrderBy(filteredRows, statement.OrderBy, context);
+
+        filteredRows = ApplyLimitOffset(filteredRows, statement.Limit, statement.Offset);
 
         var (selectedIndices, outputColumnNames, outputColumnTypes) = BindJoinColumns(statement.Columns, context);
 
@@ -425,28 +429,49 @@ public sealed class QueryEngine : IDisposable
         return boundValues;
     }
 
-    private static int[] BindSingleTableColumns(TableSchema schema, IReadOnlyList<ColumnReference>? columns)
+    /// <summary>
+    /// Resolves the column ordinals, names, and types for a single-table SELECT.
+    /// Handles both plain column references and aggregate items (aggregate columns are NOT included here;
+    /// they are handled separately by the aggregation path).
+    /// </summary>
+    private static (int[] Ordinals, string[] Names, ColumnType[] Types) BindSingleTableSelectItems(
+        TableInfo table,
+        IReadOnlyList<SelectItem>? items)
     {
-        if (columns is null)
+        if (items is null)
         {
-            return Enumerable.Range(0, schema.Columns.Count).ToArray();
+            var allOrdinals = Enumerable.Range(0, table.Schema.Columns.Count).ToArray();
+            var allNames = allOrdinals.Select(i => table.Schema.Columns[i].Name).ToArray();
+            var allTypes = allOrdinals.Select(i => table.Schema.Columns[i].Type).ToArray();
+            return (allOrdinals, allNames, allTypes);
         }
 
-        if (columns.Count == 0)
-        {
+        if (items.Count == 0)
             throw new InvalidOperationException("SELECT requires at least one projected column.");
-        }
 
-        return columns.Select(col =>
+        var ordinals = new List<int>();
+        var names = new List<string>();
+        var types = new List<ColumnType>();
+
+        foreach (var item in items)
         {
+            if (item is not ColumnSelectItem colItem)
+                throw new InvalidOperationException("Aggregate functions are not allowed outside a GROUP BY context.");
+
+            var col = colItem.Column;
             if (col.TableName is not null &&
-                !string.Equals(col.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(col.TableName, table.TableName, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException($"Table '{col.TableName}' not found in the FROM clause.");
             }
 
-            return schema.GetColumnOrdinal(col.ColumnName);
-        }).ToArray();
+            var ordinal = table.Schema.GetColumnOrdinal(col.ColumnName);
+            ordinals.Add(ordinal);
+            names.Add(col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName);
+            types.Add(table.Schema.Columns[ordinal].Type);
+        }
+
+        return (ordinals.ToArray(), names.ToArray(), types.ToArray());
     }
 
     private IReadOnlyList<object?[]> ReadFilteredRows(TableInfo table, WhereExpression filter)
@@ -520,12 +545,12 @@ public sealed class QueryEngine : IDisposable
     }
 
     private static (int[] Indices, string[] Names, ColumnType[] Types) BindJoinColumns(
-        IReadOnlyList<ColumnReference>? columns,
+        IReadOnlyList<SelectItem>? items,
         IReadOnlyList<(TableInfo Table, int Offset)> context)
     {
         var flatTypes = BuildFlatTypeArray(context);
 
-        if (columns is null)
+        if (items is null)
         {
             var allIndices = new List<int>();
             var allNames = new List<string>();
@@ -542,23 +567,26 @@ public sealed class QueryEngine : IDisposable
             return (allIndices.ToArray(), allNames.ToArray(), allTypes.ToArray());
         }
 
-        if (columns.Count == 0)
+        if (items.Count == 0)
             throw new InvalidOperationException("SELECT requires at least one projected column.");
 
-        var indices = new int[columns.Count];
-        var names = new string[columns.Count];
-        var types = new ColumnType[columns.Count];
-        for (var i = 0; i < columns.Count; i++)
+        var indices = new List<int>();
+        var names = new List<string>();
+        var types = new List<ColumnType>();
+
+        foreach (var item in items)
         {
-            var col = columns[i];
-            indices[i] = QueryExecutor.ResolveColumn(col.TableName, col.ColumnName, context);
-            names[i] = col.TableName is not null
-                ? $"{col.TableName}.{col.ColumnName}"
-                : col.ColumnName;
-            types[i] = flatTypes[indices[i]];
+            if (item is not ColumnSelectItem colItem)
+                throw new InvalidOperationException("Aggregate functions are not allowed in JOIN queries.");
+
+            var col = colItem.Column;
+            var idx = QueryExecutor.ResolveColumn(col.TableName, col.ColumnName, context);
+            indices.Add(idx);
+            names.Add(col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName);
+            types.Add(flatTypes[idx]);
         }
 
-        return (indices, names, types);
+        return (indices.ToArray(), names.ToArray(), types.ToArray());
     }
 
     private static ColumnType[] BuildFlatTypeArray(IReadOnlyList<(TableInfo Table, int Offset)> context)
@@ -610,4 +638,307 @@ public sealed class QueryEngine : IDisposable
             "BOOLEAN" or "BOOL" => ColumnType.Boolean,
             _ => throw new InvalidOperationException($"Unsupported SQL column type '{typeName}'.")
         };
+
+    // ── ORDER BY / LIMIT / OFFSET ─────────────────────────────────────────────
+
+    private static IEnumerable<object?[]> ApplyOrderBy(
+        IEnumerable<object?[]> rows,
+        IReadOnlyList<OrderByTerm> orderBy,
+        IReadOnlyList<(TableInfo Table, int Offset)> context)
+    {
+        IOrderedEnumerable<object?[]>? ordered = null;
+
+        for (var i = 0; i < orderBy.Count; i++)
+        {
+            var term = orderBy[i];
+            var colIndex = QueryExecutor.ResolveColumn(term.Column.TableName, term.Column.ColumnName, context);
+
+            if (i == 0)
+            {
+                ordered = term.Descending
+                    ? rows.OrderByDescending(row => row[colIndex], NullableComparer.Instance)
+                    : rows.OrderBy(row => row[colIndex], NullableComparer.Instance);
+            }
+            else
+            {
+                ordered = term.Descending
+                    ? ordered!.ThenByDescending(row => row[colIndex], NullableComparer.Instance)
+                    : ordered!.ThenBy(row => row[colIndex], NullableComparer.Instance);
+            }
+        }
+
+        return ordered ?? rows;
+    }
+
+    private static IEnumerable<object?[]> ApplyLimitOffset(
+        IEnumerable<object?[]> rows,
+        int? limit,
+        int? offset)
+    {
+        if (offset is > 0)
+            rows = rows.Skip(offset.Value);
+        if (limit.HasValue)
+            rows = rows.Take(limit.Value);
+        return rows;
+    }
+
+    // ── Aggregation ───────────────────────────────────────────────────────────
+
+    private QueryExecutionResult ExecuteSelectWithAggregation(TableInfo table, SelectStatement statement)
+    {
+        // Validate: strict GROUP BY — every non-aggregate SELECT column must appear in GROUP BY.
+        var groupBySet = new HashSet<string>(
+            statement.GroupBy ?? [],
+            StringComparer.OrdinalIgnoreCase);
+
+        if (statement.Columns is not null)
+        {
+            foreach (var item in statement.Columns)
+            {
+                if (item is ColumnSelectItem colItem)
+                {
+                    if (!groupBySet.Contains(colItem.Column.ColumnName))
+                        throw new InvalidOperationException(
+                            $"Column '{colItem.Column.ColumnName}' must appear in GROUP BY or be used in an aggregate function.");
+                }
+            }
+        }
+
+        // Fetch all rows (full scan or index seek via planner, no ORDER BY on this path for now).
+        var plan = _planner.Plan(table, statement.Filter);
+        var allRows = _executor.Execute(plan);
+
+        // Determine GROUP BY column ordinals.
+        var groupByOrdinals = (statement.GroupBy ?? [])
+            .Select(col => table.Schema.GetColumnOrdinal(col))
+            .ToArray();
+
+        // Group rows by GROUP BY key (tuple of values at group-by ordinals).
+        var groups = new Dictionary<GroupKey, List<object?[]>>();
+        foreach (var row in allRows)
+        {
+            var key = new GroupKey(groupByOrdinals.Select(i => row[i]).ToArray());
+            if (!groups.TryGetValue(key, out var group))
+            {
+                group = [];
+                groups[key] = group;
+            }
+            group.Add(row);
+        }
+
+        // If no rows and no GROUP BY, still produce one aggregate row (e.g. COUNT(*) → 0).
+        if (groups.Count == 0 && groupByOrdinals.Length == 0)
+            groups[new GroupKey([])] = [];
+
+        // Build output column metadata.
+        var outNames = new List<string>();
+        var outTypes = new List<ColumnType>();
+
+        IReadOnlyList<SelectItem> selectItems = statement.Columns
+            ?? table.Schema.Columns
+                .Select((col, i) => (SelectItem)new ColumnSelectItem(new ColumnReference(null, col.Name)))
+                .ToList();
+
+        foreach (var item in selectItems)
+        {
+            switch (item)
+            {
+                case ColumnSelectItem colItem:
+                    outNames.Add(colItem.Column.ColumnName);
+                    outTypes.Add(table.Schema.Columns[table.Schema.GetColumnOrdinal(colItem.Column.ColumnName)].Type);
+                    break;
+                case AggregateSelectItem aggItem:
+                    outNames.Add(FormatAggregateName(aggItem));
+                    outTypes.Add(aggItem.Fn == AggregateFn.Avg ? ColumnType.Float64 : ColumnType.Int64);
+                    break;
+            }
+        }
+
+        // Compute result rows per group.
+        var resultRows = new List<object?[]>();
+        foreach (var (key, groupRows) in groups)
+        {
+            // Apply HAVING filter.
+            if (statement.Having is not null && !EvaluateHaving(statement.Having, groupRows, table))
+                continue;
+
+            var outRow = new object?[selectItems.Count];
+            var keyIndex = 0;
+
+            for (var i = 0; i < selectItems.Count; i++)
+            {
+                switch (selectItems[i])
+                {
+                    case ColumnSelectItem:
+                        outRow[i] = key.Values[keyIndex++];
+                        break;
+                    case AggregateSelectItem aggItem:
+                        outRow[i] = ComputeAggregate(aggItem, groupRows, table);
+                        break;
+                }
+            }
+
+            resultRows.Add(outRow);
+        }
+
+        // Apply ORDER BY and LIMIT/OFFSET after aggregation.
+        IEnumerable<object?[]> resultSeq = resultRows;
+        if (statement.OrderBy is { Count: > 0 })
+        {
+            // For aggregation results, resolve column names against output column names.
+            resultSeq = ApplyOrderByOnResult(resultSeq, statement.OrderBy, outNames);
+        }
+        resultSeq = ApplyLimitOffset(resultSeq, statement.Limit, statement.Offset);
+
+        return QueryExecutionResult.WithRows(outNames, resultSeq.ToArray(), outTypes);
+    }
+
+    private static string FormatAggregateName(AggregateSelectItem item) =>
+        item.Argument is null
+            ? $"{item.Fn}(*)"
+            : $"{item.Fn}({item.Argument.ColumnName})";
+
+    private static object? ComputeAggregate(
+        AggregateSelectItem item,
+        IReadOnlyList<object?[]> rows,
+        TableInfo table)
+    {
+        if (item.Fn == AggregateFn.Count)
+        {
+            if (item.Argument is null)
+                return (long)rows.Count;
+
+            // COUNT(col) — count non-NULL values.
+            var ordinal = table.Schema.GetColumnOrdinal(item.Argument.ColumnName);
+            return (long)rows.Count(r => r[ordinal] is not null);
+        }
+
+        if (rows.Count == 0)
+            return null;
+
+        var colOrdinal = table.Schema.GetColumnOrdinal(item.Argument!.ColumnName);
+        var nonNullValues = rows
+            .Select(r => r[colOrdinal])
+            .Where(v => v is not null)
+            .ToList();
+
+        if (nonNullValues.Count == 0)
+            return null;
+
+        return item.Fn switch
+        {
+            AggregateFn.Sum => nonNullValues.Aggregate(0L, (acc, v) => acc + Convert.ToInt64(v)),
+            AggregateFn.Min => nonNullValues.Cast<IComparable>().Min(),
+            AggregateFn.Max => nonNullValues.Cast<IComparable>().Max(),
+            AggregateFn.Avg => nonNullValues.Average(v => Convert.ToDouble(v)),
+            _ => throw new InvalidOperationException($"Unknown aggregate function {item.Fn}.")
+        };
+    }
+
+    private static bool EvaluateHaving(
+        HavingExpression having,
+        IReadOnlyList<object?[]> groupRows,
+        TableInfo table)
+    {
+        var aggItem = new AggregateSelectItem(having.Fn, having.Argument);
+        var computedValue = ComputeAggregate(aggItem, groupRows, table);
+        return QueryExecutor.EvaluateComparison(computedValue, having.Op, having.Value.Value);
+    }
+
+    private static IEnumerable<object?[]> ApplyOrderByOnResult(
+        IEnumerable<object?[]> rows,
+        IReadOnlyList<OrderByTerm> orderBy,
+        IReadOnlyList<string> columnNames)
+    {
+        IOrderedEnumerable<object?[]>? ordered = null;
+
+        for (var i = 0; i < orderBy.Count; i++)
+        {
+            var term = orderBy[i];
+            var colIdx = FindColumnIndex(columnNames, term.Column.ColumnName);
+            if (colIdx < 0)
+                throw new InvalidOperationException($"ORDER BY column '{term.Column.ColumnName}' not found in SELECT list.");
+
+            var idx = colIdx;
+            if (i == 0)
+            {
+                ordered = term.Descending
+                    ? rows.OrderByDescending(row => row[idx], NullableComparer.Instance)
+                    : rows.OrderBy(row => row[idx], NullableComparer.Instance);
+            }
+            else
+            {
+                ordered = term.Descending
+                    ? ordered!.ThenByDescending(row => row[idx], NullableComparer.Instance)
+                    : ordered!.ThenBy(row => row[idx], NullableComparer.Instance);
+            }
+        }
+
+        return ordered ?? rows;
+    }
+
+    private static int FindColumnIndex(IReadOnlyList<string> names, string name)
+    {
+        for (var i = 0; i < names.Count; i++)
+        {
+            if (string.Equals(names[i], name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+}
+
+/// <summary>Compares values that may be null, placing nulls last.</summary>
+file sealed class NullableComparer : IComparer<object?>
+{
+    public static readonly NullableComparer Instance = new();
+
+    public int Compare(object? x, object? y)
+    {
+        if (x is null && y is null) return 0;
+        if (x is null) return 1;  // nulls last
+        if (y is null) return -1;
+        if (x is IComparable cx)
+        {
+            try { return cx.CompareTo(y); }
+            catch (ArgumentException) { return string.Compare(x.ToString(), y.ToString(), StringComparison.Ordinal); }
+        }
+        return string.Compare(x.ToString(), y.ToString(), StringComparison.Ordinal);
+    }
+}
+
+/// <summary>Equality key for GROUP BY bucketing.</summary>
+file sealed class GroupKey : IEquatable<GroupKey>
+{
+    public object?[] Values { get; }
+
+    public GroupKey(object?[] values) => Values = values;
+
+    public bool Equals(GroupKey? other)
+    {
+        if (other is null) return false;
+        if (Values.Length != other.Values.Length) return false;
+        for (var i = 0; i < Values.Length; i++)
+        {
+            var a = Values[i]; var b = other.Values[i];
+            if (a is null && b is null) continue;
+            if (a is null || b is null) return false;
+            if (a is byte[] ab && b is byte[] bb) { if (!ab.SequenceEqual(bb)) return false; continue; }
+            if (!a.Equals(b)) return false;
+        }
+        return true;
+    }
+
+    public override bool Equals(object? obj) => obj is GroupKey gk && Equals(gk);
+
+    public override int GetHashCode()
+    {
+        var hc = new HashCode();
+        foreach (var v in Values)
+        {
+            if (v is byte[] bytes) foreach (var b in bytes) hc.Add(b);
+            else hc.Add(v);
+        }
+        return hc.ToHashCode();
+    }
 }

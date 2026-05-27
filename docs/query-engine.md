@@ -11,7 +11,10 @@ Sqlity now includes a small executable query layer on top of the storage engine.
 - execute primary-key lookup, full table iteration, row deletion, and row update
 - evaluate `INNER JOIN` and `LEFT JOIN` with flat column contexts
 - evaluate compound `WHERE` expressions with `AND`/`OR`, all comparison operators, and `IS NULL` / `IS NOT NULL`
-- choose between a secondary-index seek and a full scan based on available indexes and predicate equality coverage
+- choose between a secondary-index seek, an index-ordered scan, and a full scan based on available indexes and predicate/order-by coverage
+- sort result rows by one or more columns (`ORDER BY`) with an optional index-ordered scan optimisation
+- apply `LIMIT` and `OFFSET` to any result set
+- evaluate aggregate functions (`COUNT`, `SUM`, `MIN`, `MAX`, `AVG`) with optional `GROUP BY` grouping and `HAVING` filtering
 
 ## Supported SQL surface
 
@@ -108,6 +111,10 @@ Supported shapes:
 ```sql
 SELECT * FROM users;
 SELECT id, name FROM users WHERE id = 2;
+SELECT id, name FROM users ORDER BY name ASC;
+SELECT id, name FROM users ORDER BY name ASC LIMIT 10 OFFSET 20;
+SELECT dept, COUNT(*), SUM(salary) FROM employees GROUP BY dept;
+SELECT dept, COUNT(*) FROM employees GROUP BY dept HAVING COUNT(*) > 5;
 SELECT users.name, orders.amount FROM users
     INNER JOIN orders ON users.id = orders.user_id
     WHERE orders.amount > 50;
@@ -117,11 +124,17 @@ SELECT users.name, orders.amount FROM users
 
 Rules:
 
-- projections can be `*` or an explicit column list
+- projections can be `*`, an explicit column list, or aggregate expressions (`COUNT(*)`, `COUNT(col)`, `SUM(col)`, `MIN(col)`, `MAX(col)`, `AVG(col)`)
 - column references may optionally be table-qualified (`users.name`)
 - `WHERE` supports any column, any comparison operator, and compound `AND`/`OR` expressions (see [WHERE expressions](#where-expressions))
 - when no `WHERE` is given, a full table scan is performed
 - primary-key equality filters use a B+ tree point lookup; equality predicates on secondary-indexed columns trigger an index seek; all other predicates either become a post-filter or fall back to a full scan (see [Query planner](#query-planner))
+- `ORDER BY` accepts one or more columns each with an optional `ASC` (default) or `DESC` direction; if a secondary index exists on the leading sort column the planner emits an `IndexOrderedScan` instead of an in-memory sort
+- `LIMIT n` truncates the result to at most *n* rows; `OFFSET m` skips the first *m* rows; both can be combined and are applied after any `ORDER BY`
+- `GROUP BY` accepts one or more column names; every non-aggregate `SELECT` column must appear in `GROUP BY` (strict enforcement, throws otherwise)
+- `HAVING` filters groups after aggregation; the expression must be a single aggregate comparison (e.g. `HAVING SUM(amount) >= 100`); the aggregate function used in `HAVING` need not appear in the `SELECT` list
+- `AVG` always returns a `double`; `COUNT`, `SUM`, `MIN`, and `MAX` over integer columns return `INT64`; aggregate column names in the result are formatted as `Count(*)`, `Sum(amount)`, etc.
+- aggregate queries are not supported in `JOIN` paths
 
 ### `INNER JOIN` / `LEFT JOIN`
 
@@ -210,9 +223,10 @@ Single-table `SELECT` queries go through a rule-based logical/physical planner b
 
 1. The planner flattens `AND`-connected predicates into a list of atoms.
 2. For each secondary index on the queried table it scores the index by counting how many leading columns are covered by equality predicates.
-3. The index with the highest score is chosen. If no index scores above zero, a full scan is used.
-4. An **index seek** builds a sort-preserving prefix key from the matching predicates and calls `SecondaryBPlusTree.RangeSeek`. Remaining (unmatched) predicates become a **post-filter** applied to each fetched row.
-5. A **full scan** reads all rows and evaluates all predicates in memory.
+3. The index with the highest score is chosen. If no index scores above zero, the planner considers `ORDER BY` optimisation (step 4). If there is no `ORDER BY` either, a full scan is used.
+4. If no WHERE index is chosen but an `ORDER BY` clause is present and a secondary index exists whose leading column matches the first `ORDER BY` term (same direction), the planner emits a `PhysicalIndexOrderedScan`. Rows arrive in B+ tree key order so no in-memory sort is needed.
+5. An **index seek** builds a sort-preserving prefix key from the matching predicates and calls `SecondaryBPlusTree.RangeSeek`. Remaining (unmatched) predicates become a **post-filter** applied to each fetched row.
+6. A **full scan** reads all rows and evaluates all predicates in memory.
 
 ### Example
 
@@ -228,18 +242,22 @@ SELECT id FROM orders WHERE customer_id = 42 AND status = 'open';
 ### Current limitations
 
 - only **equality** predicates score index coverage; range predicates (`<`, `>`, `<=`, `>=`) do not contribute to the leading-column score (they always become a post-filter or trigger a full scan)
+- the `ORDER BY` index optimisation only applies when a WHERE clause does not already use a different index; mixed WHERE+ORDER BY index is not yet costed
 - `JOIN` queries always use full scans on each side; the planner only optimises single-table paths
+- `ORDER BY` index scan requires all sort terms to share the same direction (all ASC or all DESC); mixed-direction multi-column ORDER BY falls back to in-memory sort
 - if multiple indexes tie on score, the first one returned by the catalog wins
 
 ## Deliberate limitations
 
-- no grouping, ordering, or aggregates
-- no `ALTER TABLE` or `DROP INDEX`
+- no subqueries (`IN (subquery)`, correlated subqueries, etc.)
+- no `ALTER TABLE`, `DROP TABLE`, or `DROP INDEX`
 - no table constraints beyond the inline primary key and `NOT NULL`
 - range predicates on secondary indexes fall back to a full scan (equality-only planner for now)
 - single active transaction per engine instance; nested transactions are not supported
+- `HAVING` supports only a single aggregate comparison; compound `HAVING` expressions are not yet parsed
+- aggregate queries are not supported in `JOIN` paths
 
-These constraints are intentional. The goal of the current milestone is to connect SQL text to the persisted catalog and row/page storage, and demonstrate a working index path, without hiding the mechanics behind a large abstraction layer.
+These constraints are intentional. The goal is to keep the implementation close to the underlying page and catalog mechanics without hiding them behind a large abstraction layer.
 
 ## First user-owned database workflow
 
@@ -259,5 +277,5 @@ For more executable CLI examples with captured output, see `samples/Sqlity.Cli/R
 
 The current runtime limits are:
 
-- `WHERE` on non-primary-key columns performs a full table scan
-- no subqueries, aggregates, or window functions
+- `WHERE` on non-primary-key columns performs a full table scan unless a secondary index covers the predicate
+- no subqueries or window functions

@@ -122,6 +122,20 @@ internal static class SqlTokenizer
             "TRANSACTION" => SqlTokenKind.Transaction,
             "INDEX" => SqlTokenKind.Index,
             "UNIQUE" => SqlTokenKind.Unique,
+            "ORDER" => SqlTokenKind.Order,
+            "BY" => SqlTokenKind.By,
+            "ASC" => SqlTokenKind.Asc,
+            "DESC" => SqlTokenKind.Desc,
+            "LIMIT" => SqlTokenKind.Limit,
+            "OFFSET" => SqlTokenKind.Offset,
+            "GROUP" => SqlTokenKind.Group,
+            "HAVING" => SqlTokenKind.Having,
+            "COUNT" => SqlTokenKind.Count,
+            "SUM" => SqlTokenKind.Sum,
+            "MIN" => SqlTokenKind.Min,
+            "MAX" => SqlTokenKind.Max,
+            "AVG" => SqlTokenKind.Avg,
+            "DROP" => SqlTokenKind.Drop,
             _ => SqlTokenKind.Identifier
         };
 
@@ -252,5 +266,19 @@ internal enum SqlTokenKind
     Rollback = 43,
     Transaction = 44,
     Index = 45,
-    Unique = 46
+    Unique = 46,
+    Order = 47,
+    By = 48,
+    Asc = 49,
+    Desc = 50,
+    Limit = 51,
+    Offset = 52,
+    Group = 53,
+    Having = 54,
+    Count = 55,
+    Sum = 56,
+    Min = 57,
+    Max = 58,
+    Avg = 59,
+    Drop = 60
 }

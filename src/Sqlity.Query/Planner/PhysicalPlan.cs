@@ -14,3 +14,10 @@ internal sealed record PhysicalIndexSeek(
     IndexInfo Index,
     IndexSeekRange Range,
     WhereExpression? PostFilter) : PhysicalPlan;
+
+/// <summary>Full index scan in key order, optionally reversed for DESC.</summary>
+internal sealed record PhysicalIndexOrderedScan(
+    TableInfo Table,
+    IndexInfo Index,
+    WhereExpression? PostFilter,
+    bool Descending) : PhysicalPlan;

@@ -14,3 +14,10 @@ internal sealed record LogicalIndexSeek(
     IndexInfo Index,
     IndexSeekRange Range,
     WhereExpression? PostFilter) : LogicalPlan;
+
+/// <summary>Full index scan in key order, optionally reversed for DESC. Used when ORDER BY matches leading index columns.</summary>
+internal sealed record LogicalIndexOrderedScan(
+    TableInfo Table,
+    IndexInfo Index,
+    WhereExpression? PostFilter,
+    bool Descending) : LogicalPlan;

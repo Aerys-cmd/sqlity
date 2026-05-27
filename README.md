@@ -28,13 +28,18 @@ The repository now contains a storage engine, an executable SQL layer, secondary
 - secondary B+ trees with sort-preserving key encoding for all column types
 - persisted index catalog (`__sqlity_indexes`) that survives reopen
 - automatic index maintenance on `INSERT`, `DELETE`, and `UPDATE`
-- rule-based logical/physical query planner: equality predicates on indexed columns produce an index seek; unmatched predicates become a post-filter
+- rule-based logical/physical query planner: equality predicates on indexed columns produce an index seek; unmatched predicates become a post-filter; `ORDER BY` on an indexed column triggers an ordered index scan
 - `CREATE [UNIQUE] INDEX` with duplicate-key enforcement on unique indexes
 - full ADO.NET provider: `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`
 - `BEGIN` / `BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK` transaction boundaries
 - rollback journal: every write is journaled before it happens; a stale journal on reopen triggers automatic crash recovery
 - auto-commit for statements executed outside an explicit `BEGIN`
 - multi-statement batch execution: multiple `;`-separated statements in a single `Execute` call
+- `ORDER BY` (single or multi-column, `ASC`/`DESC`); index-aware: a secondary index on the sort column avoids a sort step
+- `LIMIT` and `OFFSET` for result pagination
+- aggregate functions: `COUNT(*)`, `COUNT(col)`, `SUM`, `MIN`, `MAX`, `AVG` (returns `double`)
+- `GROUP BY` (single or multi-column) with strict column-validation: every non-aggregate `SELECT` column must appear in `GROUP BY`
+- `HAVING` with a single aggregate comparison (e.g. `HAVING COUNT(*) > 5`)
 - storage, query, CLI, and ADO.NET test coverage
 
 ## Repository layout
@@ -183,7 +188,10 @@ Current limits to keep in mind:
 
 - supported statements are `CREATE TABLE`, `INSERT`, `SELECT`, `DELETE`, `UPDATE`, `CREATE INDEX`, `CREATE UNIQUE INDEX`, `BEGIN` / `BEGIN TRANSACTION`, `COMMIT`, and `ROLLBACK`; multiple statements can be batched in a single call
 - `WHERE` supports any column with full `AND`/`OR` composition and `IS NULL` / `IS NOT NULL`; equality predicates on indexed columns use a secondary B+ tree seek; primary-key equality uses a primary B+ tree point lookup; unmatched predicates apply as a post-filter
-- no aggregates, no `ORDER BY`, no subqueries
+- `ORDER BY` (single or multi-column, `ASC`/`DESC`); a secondary index on the leading sort column triggers an index-ordered scan instead of an in-memory sort
+- `LIMIT` and `OFFSET` for pagination, combinable with `ORDER BY`
+- aggregate functions `COUNT(*)`, `COUNT(col)`, `SUM`, `MIN`, `MAX`, `AVG` with optional `GROUP BY` and `HAVING`
+- no subqueries, `DROP TABLE`, or `ALTER TABLE`
 
 That file path is the database. If `my-db.sqlity` does not exist, Sqlity creates it; if it exists, Sqlity reopens it.
 

@@ -182,21 +182,21 @@ internal sealed class SqlParser
     {
         Expect(SqlTokenKind.Select);
 
-        IReadOnlyList<ColumnReference>? columns;
+        IReadOnlyList<SelectItem>? columns;
         if (Match(SqlTokenKind.Star))
         {
             columns = null;
         }
         else
         {
-            var selectedColumns = new List<ColumnReference>();
+            var selectedItems = new List<SelectItem>();
             do
             {
-                selectedColumns.Add(ParseColumnReference("Expected a column name in the SELECT list."));
+                selectedItems.Add(ParseSelectItem());
             }
             while (Match(SqlTokenKind.Comma));
 
-            columns = selectedColumns;
+            columns = selectedItems;
         }
 
         Expect(SqlTokenKind.From);
@@ -214,7 +214,132 @@ internal sealed class SqlParser
             filter = ParseWhereExpression();
         }
 
-        return new SelectStatement(tableName, columns, filter, joins);
+        IReadOnlyList<string>? groupBy = null;
+        if (Match(SqlTokenKind.Group))
+        {
+            Expect(SqlTokenKind.By);
+            var groupCols = new List<string>();
+            do
+            {
+                groupCols.Add(ExpectIdentifier("Expected a column name in GROUP BY."));
+            }
+            while (Match(SqlTokenKind.Comma));
+            groupBy = groupCols;
+        }
+
+        HavingExpression? having = null;
+        if (Match(SqlTokenKind.Having))
+        {
+            having = ParseHavingExpression();
+        }
+
+        IReadOnlyList<OrderByTerm>? orderBy = null;
+        if (Match(SqlTokenKind.Order))
+        {
+            Expect(SqlTokenKind.By);
+            var terms = new List<OrderByTerm>();
+            do
+            {
+                var col = ParseColumnReference("Expected a column name in ORDER BY.");
+                var descending = Match(SqlTokenKind.Desc);
+                if (!descending) Match(SqlTokenKind.Asc); // ASC is the default; consume if present
+                terms.Add(new OrderByTerm(col, descending));
+            }
+            while (Match(SqlTokenKind.Comma));
+            orderBy = terms;
+        }
+
+        int? limit = null;
+        if (Match(SqlTokenKind.Limit))
+        {
+            var token = Advance();
+            if (token.Kind != SqlTokenKind.IntegerLiteral)
+                throw new InvalidOperationException("Expected an integer literal after LIMIT.");
+            limit = (int)long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        int? offset = null;
+        if (Match(SqlTokenKind.Offset))
+        {
+            var token = Advance();
+            if (token.Kind != SqlTokenKind.IntegerLiteral)
+                throw new InvalidOperationException("Expected an integer literal after OFFSET.");
+            offset = (int)long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return new SelectStatement(tableName, columns, filter, joins, groupBy, having, orderBy, limit, offset);
+    }
+
+    private SelectItem ParseSelectItem()
+    {
+        var kind = Peek().Kind;
+        if (kind is SqlTokenKind.Count or SqlTokenKind.Sum or SqlTokenKind.Min or SqlTokenKind.Max or SqlTokenKind.Avg)
+        {
+            return ParseAggregateSelectItem();
+        }
+
+        return new ColumnSelectItem(ParseColumnReference("Expected a column name in the SELECT list."));
+    }
+
+    private AggregateSelectItem ParseAggregateSelectItem()
+    {
+        var fnToken = Advance();
+        var fn = fnToken.Kind switch
+        {
+            SqlTokenKind.Count => AggregateFn.Count,
+            SqlTokenKind.Sum => AggregateFn.Sum,
+            SqlTokenKind.Min => AggregateFn.Min,
+            SqlTokenKind.Max => AggregateFn.Max,
+            SqlTokenKind.Avg => AggregateFn.Avg,
+            _ => throw new InvalidOperationException($"Expected an aggregate function name, but found '{fnToken.Lexeme}'.")
+        };
+
+        Expect(SqlTokenKind.OpenParen);
+
+        ColumnReference? argument = null;
+        if (fn == AggregateFn.Count && Match(SqlTokenKind.Star))
+        {
+            // COUNT(*) — argument stays null
+        }
+        else
+        {
+            argument = ParseColumnReference($"Expected a column reference inside {fnToken.Lexeme}(...).");
+        }
+
+        Expect(SqlTokenKind.CloseParen);
+        return new AggregateSelectItem(fn, argument);
+    }
+
+    private HavingExpression ParseHavingExpression()
+    {
+        var fnToken = Advance();
+        var fn = fnToken.Kind switch
+        {
+            SqlTokenKind.Count => AggregateFn.Count,
+            SqlTokenKind.Sum => AggregateFn.Sum,
+            SqlTokenKind.Min => AggregateFn.Min,
+            SqlTokenKind.Max => AggregateFn.Max,
+            SqlTokenKind.Avg => AggregateFn.Avg,
+            _ => throw new InvalidOperationException($"Expected an aggregate function in HAVING, but found '{fnToken.Lexeme}'.")
+        };
+
+        Expect(SqlTokenKind.OpenParen);
+
+        ColumnReference? argument = null;
+        if (fn == AggregateFn.Count && Match(SqlTokenKind.Star))
+        {
+            // COUNT(*) — argument stays null
+        }
+        else
+        {
+            argument = ParseColumnReference($"Expected a column reference inside {fnToken.Lexeme}(...).");
+        }
+
+        Expect(SqlTokenKind.CloseParen);
+
+        var op = ParseComparisonOp();
+        var value = ParseLiteral();
+        return new HavingExpression(fn, argument, op, value);
     }
 
     private JoinClause ParseJoinClause()
@@ -435,7 +560,7 @@ internal sealed record CreateIndexStatement(string IndexName, bool IsUnique, str
 
 internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<SqlLiteral> Values) : SqlStatement;
 
-internal sealed record SelectStatement(string TableName, IReadOnlyList<ColumnReference>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins) : SqlStatement;
+internal sealed record SelectStatement(string TableName, IReadOnlyList<SelectItem>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins, IReadOnlyList<string>? GroupBy, HavingExpression? Having, IReadOnlyList<OrderByTerm>? OrderBy, int? Limit, int? Offset) : SqlStatement;
 
 internal sealed record DeleteStatement(string TableName, WhereExpression Filter) : SqlStatement;
 
@@ -468,3 +593,23 @@ internal enum ComparisonOp { Equals, NotEquals, LessThan, GreaterThan, LessThanO
 internal enum LogicalOp { And, Or }
 
 internal sealed record SqlLiteral(object? Value);
+
+// ── SELECT item hierarchy ─────────────────────────────────────────────────────
+
+internal abstract record SelectItem;
+
+internal sealed record ColumnSelectItem(ColumnReference Column) : SelectItem;
+
+/// <summary>Aggregate function call in a SELECT list. <c>Argument</c> is null for COUNT(*).</summary>
+internal sealed record AggregateSelectItem(AggregateFn Fn, ColumnReference? Argument) : SelectItem;
+
+internal enum AggregateFn { Count, Sum, Min, Max, Avg }
+
+// ── ORDER BY ─────────────────────────────────────────────────────────────────
+
+internal sealed record OrderByTerm(ColumnReference Column, bool Descending);
+
+// ── HAVING ────────────────────────────────────────────────────────────────────
+
+/// <summary>Single aggregate-comparison predicate: e.g. COUNT(*) &gt; 5.</summary>
+internal sealed record HavingExpression(AggregateFn Fn, ColumnReference? Argument, ComparisonOp Op, SqlLiteral Value);
