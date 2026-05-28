@@ -46,6 +46,31 @@ public sealed class TableSchema
 
     public ColumnDefinition PrimaryKeyColumn => Columns[PrimaryKeyOrdinal];
 
+    /// <summary>
+    /// Creates a virtual schema for in-memory use (e.g. view materialisation) that bypasses
+    /// the primary-key type constraint. The first <see cref="ColumnType.Int64"/> column is
+    /// used as the virtual primary key; if none exists, ordinal 0 is used regardless of type.
+    /// </summary>
+    public static TableSchema CreateVirtual(string name, IReadOnlyList<ColumnDefinition> columns)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(columns);
+
+        // Find the first Int64 column to satisfy the PK constraint, or use ordinal 0 as fallback
+        // by temporarily coercing it to Int64 for the schema check.
+        for (var i = 0; i < columns.Count; i++)
+        {
+            if (columns[i].Type == ColumnType.Int64)
+                return new TableSchema(name, columns, i);
+        }
+
+        // No Int64 column — add a synthetic hidden rowid at position 0.
+        var augmented = new ColumnDefinition[] { new("__row_id__", ColumnType.Int64, IsNullable: false) }
+            .Concat(columns)
+            .ToList();
+        return new TableSchema(name, augmented, primaryKeyOrdinal: 0);
+    }
+
     public bool TryGetColumnOrdinal(string columnName, out int ordinal)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(columnName);

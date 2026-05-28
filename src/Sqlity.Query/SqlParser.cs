@@ -27,6 +27,7 @@ internal sealed class SqlParser
             SqlTokenKind.Rollback => ParseRollback(),
             SqlTokenKind.Drop => ParseDrop(),
             SqlTokenKind.Alter => ParseAlter(),
+            SqlTokenKind.Truncate => ParseTruncate(),
             _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
@@ -54,6 +55,7 @@ internal sealed class SqlParser
                 SqlTokenKind.Rollback => ParseRollback(),
                 SqlTokenKind.Drop => ParseDrop(),
                 SqlTokenKind.Alter => ParseAlter(),
+                SqlTokenKind.Truncate => ParseTruncate(),
                 _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
             };
 
@@ -86,10 +88,12 @@ internal sealed class SqlParser
 
     private SqlStatement ParseCreate()
     {
-        // Dispatch on the token after CREATE: TABLE | [UNIQUE] INDEX
+        // Dispatch on the token after CREATE: TABLE | [UNIQUE] INDEX | VIEW
         var next = PeekAhead(1);
         if (next.Kind == SqlTokenKind.Unique || next.Kind == SqlTokenKind.Index)
             return ParseCreateIndex();
+        if (next.Kind == SqlTokenKind.View)
+            return ParseCreateView();
         return ParseCreateTable();
     }
 
@@ -155,8 +159,11 @@ internal sealed class SqlParser
             var typeName = ExpectIdentifier("Expected a type name after the column name.");
             var isPrimaryKey = false;
             var isNotNull = false;
+            var isUnique = false;
+            var isAutoIncrement = false;
+            SqlLiteral? defaultValue = null;
 
-            // Parse any combination of NOT NULL, NULL, and PRIMARY KEY in any order
+            // Parse any combination of NOT NULL, NULL, PRIMARY KEY, UNIQUE, AUTOINCREMENT, DEFAULT in any order
             bool consumed;
             do
             {
@@ -179,10 +186,25 @@ internal sealed class SqlParser
                     // Explicit NULL annotation — column is nullable (default), nothing to set
                     consumed = true;
                 }
+                else if (Match(SqlTokenKind.Unique))
+                {
+                    isUnique = true;
+                    consumed = true;
+                }
+                else if (Match(SqlTokenKind.Autoincrement) || Match(SqlTokenKind.Serial))
+                {
+                    isAutoIncrement = true;
+                    consumed = true;
+                }
+                else if (Match(SqlTokenKind.Default))
+                {
+                    defaultValue = ParseLiteral();
+                    consumed = true;
+                }
             }
             while (consumed);
 
-            columns.Add(new ColumnSpecification(columnName, typeName, isPrimaryKey, isNotNull));
+            columns.Add(new ColumnSpecification(columnName, typeName, isPrimaryKey, isNotNull, isUnique, isAutoIncrement, defaultValue));
         }
         while (Match(SqlTokenKind.Comma));
 
@@ -211,9 +233,58 @@ internal sealed class SqlParser
         return new CreateIndexStatement(indexName, isUnique, tableName, indexColumns);
     }
 
+    private TruncateTableStatement ParseTruncate()
+    {
+        Expect(SqlTokenKind.Truncate);
+        Match(SqlTokenKind.Table); // TABLE keyword is optional
+        var tableName = ExpectIdentifier("Expected a table name after TRUNCATE.");
+        return new TruncateTableStatement(tableName);
+    }
+
+    private CreateViewStatement ParseCreateView()
+    {
+        Expect(SqlTokenKind.Create);
+        Expect(SqlTokenKind.View);
+        var viewName = ExpectIdentifier("Expected a view name after CREATE VIEW.");
+        Expect(SqlTokenKind.As);
+
+        // Capture the full SELECT SQL by re-reading from the current position.
+        // We parse the SELECT AST to validate syntax, then store the remaining source SQL.
+        var selectStartPos = _position;
+        ParseSelect(); // validate syntax
+        // Reconstruct SQL from the tokens consumed between selectStartPos and _position.
+        var selectSql = ReconstructSql(selectStartPos, _position);
+        return new CreateViewStatement(viewName, selectSql);
+    }
+
+    /// <summary>Reconstructs the SQL source string for a token range by joining lexemes.</summary>
+    private string ReconstructSql(int fromToken, int toToken)
+    {
+        var parts = new System.Text.StringBuilder();
+        for (var i = fromToken; i < toToken; i++)
+        {
+            if (i > fromToken) parts.Append(' ');
+            var token = _tokens[i];
+            if (token.Kind == SqlTokenKind.StringLiteral)
+                parts.Append('\'').Append(token.Lexeme.Replace("'", "''")).Append('\'');
+            else
+                parts.Append(token.Lexeme);
+        }
+        return parts.ToString();
+    }
+
     private InsertStatement ParseInsert()
     {
         Expect(SqlTokenKind.Insert);
+
+        // Support INSERT OR REPLACE INTO ...
+        var isOrReplace = false;
+        if (Match(SqlTokenKind.Or))
+        {
+            Expect(SqlTokenKind.Replace);
+            isOrReplace = true;
+        }
+
         Expect(SqlTokenKind.Into);
         var tableName = ExpectIdentifier("Expected a table name after INSERT INTO.");
 
@@ -230,6 +301,13 @@ internal sealed class SqlParser
             Expect(SqlTokenKind.CloseParen);
         }
 
+        // INSERT INTO t SELECT ... — pipe a query result into an insert loop
+        if (Peek().Kind == SqlTokenKind.Select)
+        {
+            var sourceQuery = ParseSelect();
+            return new InsertStatement(tableName, columns, ValueRows: null, isOrReplace, (SelectStatement)sourceQuery);
+        }
+
         Expect(SqlTokenKind.Values);
 
         var valueRows = new List<IReadOnlyList<SqlLiteral>>();
@@ -244,7 +322,7 @@ internal sealed class SqlParser
         }
         while (Match(SqlTokenKind.Comma));
 
-        return new InsertStatement(tableName, columns, valueRows);
+        return new InsertStatement(tableName, columns, valueRows, isOrReplace);
     }
 
     private SelectStatement ParseSelect()
@@ -795,7 +873,7 @@ internal sealed record CreateTableStatement(string TableName, IReadOnlyList<Colu
 
 internal sealed record CreateIndexStatement(string IndexName, bool IsUnique, string TableName, IReadOnlyList<string> Columns) : SqlStatement;
 
-internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<SqlLiteral>> ValueRows) : SqlStatement;
+internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<SqlLiteral>>? ValueRows, bool IsOrReplace = false, SelectStatement? SourceQuery = null) : SqlStatement;
 
 internal sealed record DropTableStatement(string TableName) : SqlStatement;
 
@@ -805,6 +883,10 @@ internal sealed record AlterTableAddColumnStatement(string TableName, ColumnSpec
 
 internal sealed record AlterTableRenameColumnStatement(string TableName, string OldColumnName, string NewColumnName) : SqlStatement;
 
+internal sealed record TruncateTableStatement(string TableName) : SqlStatement;
+
+internal sealed record CreateViewStatement(string ViewName, string SelectSql) : SqlStatement;
+
 internal sealed record SelectStatement(string TableName, IReadOnlyList<SelectItem>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins, IReadOnlyList<string>? GroupBy, HavingExpression? Having, IReadOnlyList<OrderByTerm>? OrderBy, int? Limit, int? Offset, bool IsDistinct = false) : SqlStatement;
 
 internal sealed record DeleteStatement(string TableName, WhereExpression? Filter) : SqlStatement;
@@ -813,7 +895,7 @@ internal sealed record UpdateStatement(string TableName, IReadOnlyList<ColumnAss
 
 internal sealed record ColumnAssignment(string ColumnName, SqlLiteral Value);
 
-internal sealed record ColumnSpecification(string Name, string TypeName, bool IsPrimaryKey, bool IsNotNull = false);
+internal sealed record ColumnSpecification(string Name, string TypeName, bool IsPrimaryKey, bool IsNotNull = false, bool IsUnique = false, bool IsAutoIncrement = false, SqlLiteral? DefaultValue = null);
 
 internal sealed record ColumnReference(string? TableName, string ColumnName);
 

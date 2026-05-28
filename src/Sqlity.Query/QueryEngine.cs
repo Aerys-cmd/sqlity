@@ -142,6 +142,8 @@ public sealed class QueryEngine : IDisposable
                 AlterTableRenameStatement alterRename => ExecuteAlterTableRename(alterRename),
                 AlterTableAddColumnStatement alterAdd => ExecuteAlterTableAddColumn(alterAdd),
                 AlterTableRenameColumnStatement alterRenameCol => ExecuteAlterTableRenameColumn(alterRenameCol),
+                TruncateTableStatement truncate => ExecuteTruncateTable(truncate),
+                CreateViewStatement createView => ExecuteCreateView(createView),
                 _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
             };
 
@@ -174,25 +176,44 @@ public sealed class QueryEngine : IDisposable
             var column = statement.Columns[index];
             var isPrimaryKey = column.IsPrimaryKey;
             var isNullable = !column.IsNotNull && !isPrimaryKey;
-            columns[index] = new ColumnDefinition(column.Name, ResolveColumnType(column.TypeName), isNullable);
+
+            object? defaultValue = null;
+            var hasDefault = column.DefaultValue is not null;
+            if (hasDefault)
+                defaultValue = ResolveLiteralValue(column.DefaultValue!);
+
+            columns[index] = new ColumnDefinition(
+                column.Name,
+                ResolveColumnType(column.TypeName),
+                isNullable,
+                HasDefault: hasDefault,
+                DefaultValue: defaultValue,
+                IsAutoIncrement: column.IsAutoIncrement);
 
             if (isPrimaryKey)
             {
                 if (primaryKeyOrdinal >= 0)
-                {
                     throw new InvalidOperationException("CREATE TABLE only supports one PRIMARY KEY column.");
-                }
-
                 primaryKeyOrdinal = index;
             }
         }
 
         if (primaryKeyOrdinal < 0)
-        {
             throw new InvalidOperationException("CREATE TABLE requires an inline PRIMARY KEY column.");
-        }
 
         _storage.CreateTable(new TableSchema(statement.TableName, columns, primaryKeyOrdinal));
+
+        // Auto-create a unique index for each column declared with UNIQUE
+        for (var index = 0; index < statement.Columns.Count; index++)
+        {
+            var column = statement.Columns[index];
+            if (column.IsUnique && !column.IsPrimaryKey)
+            {
+                var indexName = $"uq_{statement.TableName}_{column.Name}";
+                _storage.CreateIndex(indexName, statement.TableName, [column.Name], isUnique: true);
+            }
+        }
+
         return QueryExecutionResult.Empty(rowsAffected: 0);
     }
 
@@ -228,13 +249,96 @@ public sealed class QueryEngine : IDisposable
         return QueryExecutionResult.Empty(rowsAffected: 0);
     }
 
+    private QueryExecutionResult ExecuteTruncateTable(TruncateTableStatement statement)
+    {
+        _storage.TruncateTable(statement.TableName);
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteCreateView(CreateViewStatement statement)
+    {
+        _storage.CreateView(statement.ViewName, statement.SelectSql);
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteSelectFromView(ViewInfo view, SelectStatement outer)
+    {
+        // Materialize the view by executing its stored SELECT
+        var innerResult = Execute(view.SelectSql);
+
+        // Build a virtual TableSchema from the result columns
+        var viewColumns = innerResult.Columns
+            .Zip(innerResult.ColumnTypes, (name, type) => new ColumnDefinition(name, type, IsNullable: true))
+            .ToArray();
+        var viewSchema = TableSchema.CreateVirtual(view.ViewName, viewColumns);
+        var viewTable = new TableInfo(TableId: 0L, view.ViewName, RootPageId: 0u, viewSchema);
+
+        // Project inner rows into a reusable array
+        var materializedRows = innerResult.Rows.Select(r => r.ToArray()).ToArray();
+
+        // Apply outer SELECT's filters, projections, ORDER BY, LIMIT
+        IEnumerable<object?[]> rowSeq = materializedRows;
+
+        if (outer.Filter is not null)
+        {
+            var resolvedFilter = ResolveSubqueries(outer.Filter);
+            var ctx = new[] { (Table: viewTable, Offset: 0) };
+            rowSeq = rowSeq.Where(row => QueryExecutor.Evaluate(resolvedFilter!, row, ctx));
+        }
+
+        if (outer.OrderBy is { Count: > 0 })
+        {
+            var ctx = new[] { (Table: viewTable, Offset: 0) };
+            rowSeq = ApplyOrderBy(rowSeq.ToArray(), outer.OrderBy, ctx);
+        }
+
+        var (projectors, projectedColumns, projectedColumnTypes) =
+            BindSingleTableSelectItems(viewTable, outer.Columns);
+
+        var projectedRows = rowSeq
+            .Select(row => projectors.Select(p => p(row)).ToArray())
+            .ToArray();
+
+        if (outer.IsDistinct)
+            projectedRows = ApplyDistinct(projectedRows);
+
+        projectedRows = ApplyLimitOffset(projectedRows, outer.Limit, outer.Offset).ToArray();
+
+        return QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
+    }
+
     private QueryExecutionResult ExecuteInsert(InsertStatement statement)
     {
         var table = _storage.GetTable(statement.TableName);
-        int rowsAffected = 0;
-        foreach (var valueRow in statement.ValueRows)
+
+        IEnumerable<object?[]> rows;
+
+        if (statement.SourceQuery is not null)
         {
-            var values = BindInsertValues(table, statement.Columns, valueRow);
+            // INSERT INTO t SELECT ...
+            var srcResult = ExecuteSelect(statement.SourceQuery);
+            rows = srcResult.Rows.Select(row =>
+            {
+                var literals = row.Select(v => new SqlLiteral(v)).ToArray();
+                return BindInsertValues(table, statement.Columns, literals);
+            });
+        }
+        else
+        {
+            rows = statement.ValueRows!.Select(valueRow => BindInsertValues(table, statement.Columns, valueRow));
+        }
+
+        int rowsAffected = 0;
+        foreach (var values in rows)
+        {
+            if (statement.IsOrReplace)
+            {
+                var pk = (long)values[table.Schema.PrimaryKeyOrdinal]!;
+                if (_storage.TryReadByPrimaryKey(table.TableName, pk, out _))
+                {
+                    _storage.Delete(table.TableName, pk);
+                }
+            }
             _storage.Insert(table.TableName, values);
             rowsAffected++;
         }
@@ -246,6 +350,10 @@ public sealed class QueryEngine : IDisposable
         var resolvedFilter = ResolveSubqueries(statement.Filter);
         if (!ReferenceEquals(resolvedFilter, statement.Filter))
             statement = statement with { Filter = resolvedFilter };
+
+        // Check if FROM references a view
+        if (_storage.TryGetView(statement.TableName, out var view))
+            return ExecuteSelectFromView(view!, statement);
 
         var fromTable = _storage.GetTable(statement.TableName);
 
@@ -493,15 +601,28 @@ public sealed class QueryEngine : IDisposable
 
         for (var index = 0; index < assignedColumns.Length; index++)
         {
-            if (!assignedColumns[index])
-            {
-                if (!table.Schema.Columns[index].IsNullable)
-                {
-                    throw new InvalidOperationException(
-                        $"Column '{table.Schema.Columns[index].Name}' is NOT NULL and must be provided in the INSERT statement.");
-                }
+            if (assignedColumns[index])
+                continue;
 
+            var col = table.Schema.Columns[index];
+
+            if (col.IsAutoIncrement)
+            {
+                var maxKey = _storage.GetMaxPrimaryKey(table.TableName);
+                boundValues[index] = (maxKey ?? 0L) + 1L;
+            }
+            else if (col.HasDefault)
+            {
+                boundValues[index] = col.DefaultValue;
+            }
+            else if (col.IsNullable)
+            {
                 boundValues[index] = null;
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"Column '{col.Name}' is NOT NULL and must be provided in the INSERT statement.");
             }
         }
 
@@ -808,6 +929,12 @@ public sealed class QueryEngine : IDisposable
             _ => throw new InvalidOperationException($"Value '{literal.Value}' is not valid for column '{column.Name}' of type {column.Type}.")
         };
     }
+
+    private static object? ResolveColumnType(ColumnDefinition col, SqlLiteral literal) =>
+        ConvertLiteral(col with { IsNullable = true }, literal);
+
+    /// <summary>Extracts the raw CLR value from a literal without column type coercion.</summary>
+    private static object? ResolveLiteralValue(SqlLiteral literal) => literal.Value;
 
     private static ColumnType ResolveColumnType(string typeName) =>
         typeName.ToUpperInvariant() switch

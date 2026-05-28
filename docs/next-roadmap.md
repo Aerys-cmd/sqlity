@@ -23,6 +23,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - EF Core 10 provider with `UseSqlity`, LINQ translation, `EnsureCreated` / `EnsureDeleted` ✅
 - CLI with single-statement and stdin-piping modes ✅
 - `LIKE` / `ILIKE`, `BETWEEN` / `NOT BETWEEN`, `NOT IN`, `SELECT DISTINCT`, UPDATE/DELETE without `WHERE`, multi-row `INSERT`, column aliases, `COALESCE` / `NULLIF` / `IFNULL` ✅
+- `DEFAULT expr`, `AUTOINCREMENT` / `SERIAL`, inline `UNIQUE`, `INSERT OR REPLACE`, `INSERT INTO t SELECT`, `CREATE VIEW`, `TRUNCATE TABLE` ✅
 
 ---
 
@@ -43,13 +44,15 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 ## Phase 2 — DDL completeness
 
-- `DEFAULT expr` in `CREATE TABLE` — parsed, stored in catalog, applied on INSERT when column omitted
-- `AUTOINCREMENT` / `SERIAL` for `INT64` primary keys — track max key in catalog, auto-assign
-- Inline `UNIQUE` constraint in `CREATE TABLE` — create an implicit unique index automatically
-- `INSERT OR REPLACE` (upsert) — detect primary-key conflict and overwrite instead of erroring
-- `INSERT INTO t SELECT …` — pipe a query result directly into an insert loop
-- `CREATE VIEW name AS SELECT …` — store view definition in catalog, materialise on query
-- `TRUNCATE TABLE` — delete all rows and release all pages back to the free list
+✅ **Complete.** All items implemented and shipped.
+
+- `DEFAULT expr` in `CREATE TABLE` — parsed, stored in catalog (Version 3 schema format), applied on INSERT when column omitted ✅
+- `AUTOINCREMENT` / `SERIAL` for `INT64` primary keys — auto-assign max+1 on INSERT when column omitted ✅
+- Inline `UNIQUE` constraint in `CREATE TABLE` — creates implicit unique index (`uq_{table}_{col}`) automatically ✅
+- `INSERT OR REPLACE` (upsert) — detects primary-key conflict and overwrites instead of erroring ✅
+- `INSERT INTO t SELECT …` — pipes a query result directly into an insert loop ✅
+- `CREATE VIEW name AS SELECT …` — stores view definition in catalog, materialises on query ✅
+- `TRUNCATE TABLE` — deletes all rows and releases all pages back to the free list ✅
 
 ---
 

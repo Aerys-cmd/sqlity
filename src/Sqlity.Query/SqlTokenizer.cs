@@ -150,6 +150,12 @@ internal static class SqlTokenizer
             "COALESCE" => SqlTokenKind.Coalesce,
             "NULLIF" => SqlTokenKind.Nullif,
             "IFNULL" => SqlTokenKind.Ifnull,
+            "DEFAULT" => SqlTokenKind.Default,
+            "AUTOINCREMENT" => SqlTokenKind.Autoincrement,
+            "SERIAL" => SqlTokenKind.Serial,
+            "REPLACE" => SqlTokenKind.Replace,
+            "VIEW" => SqlTokenKind.View,
+            "TRUNCATE" => SqlTokenKind.Truncate,
             _ => SqlTokenKind.Identifier
         };
 
@@ -338,4 +344,10 @@ internal enum SqlTokenKind
     Coalesce = 73,
     Nullif = 74,
     Ifnull = 75,
+    Default = 76,
+    Autoincrement = 77,
+    Serial = 78,
+    Replace = 79,
+    View = 80,
+    Truncate = 81,
 }

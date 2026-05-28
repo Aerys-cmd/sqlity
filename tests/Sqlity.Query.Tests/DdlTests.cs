@@ -344,4 +344,259 @@ public sealed class DdlTests
         }
         finally { Cleanup(engine, path); }
     }
+
+    // ── Phase 2: DEFAULT expr ──────────────────────────────────────────────────
+
+    [Fact]
+    public void Default_value_is_applied_when_column_omitted()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, status STRING DEFAULT 'active')");
+            engine.Execute("INSERT INTO t (id) VALUES (1)");
+            var result = engine.Execute("SELECT status FROM t WHERE id = 1");
+            Assert.Single(result.Rows);
+            Assert.Equal("active", result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void Default_integer_value_is_applied_when_column_omitted()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, score INT64 DEFAULT 0)");
+            engine.Execute("INSERT INTO t (id) VALUES (1)");
+            var result = engine.Execute("SELECT score FROM t WHERE id = 1");
+            Assert.Single(result.Rows);
+            Assert.Equal(0L, result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void Nullable_column_with_no_default_gets_null_when_omitted()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, note STRING)");
+            engine.Execute("INSERT INTO t (id) VALUES (1)");
+            var result = engine.Execute("SELECT note FROM t WHERE id = 1");
+            Assert.Single(result.Rows);
+            Assert.Null(result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    // ── Phase 2: AUTOINCREMENT / SERIAL ──────────────────────────────────────
+
+    [Fact]
+    public void Autoincrement_assigns_next_key_when_id_omitted()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY AUTOINCREMENT, name STRING)");
+            engine.Execute("INSERT INTO t (name) VALUES ('Alice')");
+            engine.Execute("INSERT INTO t (name) VALUES ('Bob')");
+            var result = engine.Execute("SELECT id FROM t ORDER BY id");
+            Assert.Equal(2, result.Rows.Count);
+            Assert.Equal(1L, result.Rows[0][0]);
+            Assert.Equal(2L, result.Rows[1][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void Serial_alias_assigns_next_key_when_id_omitted()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY SERIAL, name STRING)");
+            engine.Execute("INSERT INTO t (name) VALUES ('Alice')");
+            var result = engine.Execute("SELECT id FROM t");
+            Assert.Single(result.Rows);
+            Assert.Equal(1L, result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    // ── Phase 2: Inline UNIQUE ────────────────────────────────────────────────
+
+    [Fact]
+    public void Unique_constraint_rejects_duplicate_values()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, email STRING UNIQUE NOT NULL)");
+            engine.Execute("INSERT INTO t VALUES (1, 'a@b.com')");
+            Assert.Throws<InvalidOperationException>(() => engine.Execute("INSERT INTO t VALUES (2, 'a@b.com')"));
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void Unique_constraint_allows_distinct_values()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, code STRING UNIQUE NOT NULL)");
+            engine.Execute("INSERT INTO t VALUES (1, 'X1')");
+            engine.Execute("INSERT INTO t VALUES (2, 'X2')");
+            var result = engine.Execute("SELECT id FROM t ORDER BY id");
+            Assert.Equal(2, result.Rows.Count);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    // ── Phase 2: INSERT OR REPLACE ────────────────────────────────────────────
+
+    [Fact]
+    public void InsertOrReplace_overwrites_existing_row()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, name STRING)");
+            engine.Execute("INSERT INTO t VALUES (1, 'Alice')");
+            engine.Execute("INSERT OR REPLACE INTO t VALUES (1, 'Alicia')");
+            var result = engine.Execute("SELECT name FROM t WHERE id = 1");
+            Assert.Single(result.Rows);
+            Assert.Equal("Alicia", result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void InsertOrReplace_inserts_new_row_when_no_conflict()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, name STRING)");
+            engine.Execute("INSERT OR REPLACE INTO t VALUES (1, 'Alice')");
+            var result = engine.Execute("SELECT name FROM t WHERE id = 1");
+            Assert.Single(result.Rows);
+            Assert.Equal("Alice", result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    // ── Phase 2: INSERT INTO t SELECT ─────────────────────────────────────────
+
+    [Fact]
+    public void InsertFromSelect_copies_rows_between_tables()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE src (id INT64 PRIMARY KEY, name STRING)");
+            engine.Execute("CREATE TABLE dst (id INT64 PRIMARY KEY, name STRING)");
+            engine.Execute("INSERT INTO src VALUES (1, 'Alice'), (2, 'Bob')");
+            engine.Execute("INSERT INTO dst SELECT id, name FROM src");
+            var result = engine.Execute("SELECT id, name FROM dst ORDER BY id");
+            Assert.Equal(2, result.Rows.Count);
+            Assert.Equal(1L, result.Rows[0][0]);
+            Assert.Equal("Alice", result.Rows[0][1]);
+            Assert.Equal(2L, result.Rows[1][0]);
+            Assert.Equal("Bob", result.Rows[1][1]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void InsertFromSelect_with_column_list_maps_by_position()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE src (id INT64 PRIMARY KEY, name STRING)");
+            engine.Execute("CREATE TABLE dst (id INT64 PRIMARY KEY, label STRING)");
+            engine.Execute("INSERT INTO src VALUES (1, 'Hello')");
+            engine.Execute("INSERT INTO dst (id, label) SELECT id, name FROM src");
+            var result = engine.Execute("SELECT label FROM dst WHERE id = 1");
+            Assert.Single(result.Rows);
+            Assert.Equal("Hello", result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    // ── Phase 2: CREATE VIEW ──────────────────────────────────────────────────
+
+    [Fact]
+    public void CreateView_and_select_from_view()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE users (id INT64 PRIMARY KEY, name STRING, active BOOLEAN)");
+            engine.Execute("INSERT INTO users VALUES (1, 'Alice', TRUE)");
+            engine.Execute("INSERT INTO users VALUES (2, 'Bob', FALSE)");
+            engine.Execute("CREATE VIEW active_users AS SELECT id, name FROM users WHERE active = TRUE");
+            var result = engine.Execute("SELECT id, name FROM active_users");
+            Assert.Single(result.Rows);
+            Assert.Equal(1L, result.Rows[0][0]);
+            Assert.Equal("Alice", result.Rows[0][1]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void SelectFromView_with_additional_where()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE products (id INT64 PRIMARY KEY, category STRING, price REAL)");
+            engine.Execute("INSERT INTO products VALUES (1, 'A', 10.0)");
+            engine.Execute("INSERT INTO products VALUES (2, 'A', 20.0)");
+            engine.Execute("INSERT INTO products VALUES (3, 'B', 15.0)");
+            engine.Execute("CREATE VIEW category_a AS SELECT id, price FROM products WHERE category = 'A'");
+            var result = engine.Execute("SELECT id FROM category_a WHERE price > 15");
+            Assert.Single(result.Rows);
+            Assert.Equal(2L, result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    // ── Phase 2: TRUNCATE TABLE ───────────────────────────────────────────────
+
+    [Fact]
+    public void TruncateTable_removes_all_rows()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, name STRING)");
+            engine.Execute("INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')");
+            engine.Execute("TRUNCATE TABLE t");
+            var result = engine.Execute("SELECT COUNT(*) FROM t");
+            Assert.Equal(0L, result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
+
+    [Fact]
+    public void TruncateTable_table_still_usable_after_truncate()
+    {
+        var (engine, path) = CreateEngine();
+        try
+        {
+            engine.Execute("CREATE TABLE t (id INT64 PRIMARY KEY, name STRING)");
+            engine.Execute("INSERT INTO t VALUES (1, 'Alice')");
+            engine.Execute("TRUNCATE TABLE t");
+            engine.Execute("INSERT INTO t VALUES (1, 'Bob')");
+            var result = engine.Execute("SELECT name FROM t WHERE id = 1");
+            Assert.Single(result.Rows);
+            Assert.Equal("Bob", result.Rows[0][0]);
+        }
+        finally { Cleanup(engine, path); }
+    }
 }

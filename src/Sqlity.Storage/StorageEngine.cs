@@ -13,6 +13,7 @@ public sealed class StorageEngine : IDisposable
     private readonly bool _ownsPager;
     private readonly CatalogStore _catalog;
     private IndexCatalogStore? _indexCatalog;
+    private ViewCatalogStore? _viewCatalog;
     private readonly RowSerializer _rowSerializer = new();
 
     public StorageEngine(IPager pager)
@@ -28,9 +29,11 @@ public sealed class StorageEngine : IDisposable
         _ownsPager = ownsPager;
         _catalog = new CatalogStore(_pager, EnsureCatalogRootPage());
 
-        var indexRootPageId = _pager.ReadDatabaseHeader().IndexCatalogRootPageId;
-        if (indexRootPageId != 0)
-            _indexCatalog = new IndexCatalogStore(_pager, indexRootPageId);
+        var header = _pager.ReadDatabaseHeader();
+        if (header.IndexCatalogRootPageId != 0)
+            _indexCatalog = new IndexCatalogStore(_pager, header.IndexCatalogRootPageId);
+        if (header.ViewCatalogRootPageId != 0)
+            _viewCatalog = new ViewCatalogStore(_pager, header.ViewCatalogRootPageId);
     }
 
     public static StorageEngine Open(string filePath)
@@ -422,6 +425,79 @@ public sealed class StorageEngine : IDisposable
         return entries.Select(e => e.PrimaryKey).ToList();
     }
 
+    /// <summary>Returns the largest primary key currently stored in <paramref name="tableName"/>, or
+    /// <c>null</c> when the table is empty. Used to drive AUTOINCREMENT key assignment.</summary>
+    public long? GetMaxPrimaryKey(string tableName)
+    {
+        var table = GetTable(tableName);
+        var cells = new BPlusTree(_pager, table.RootPageId).ReadAll();
+        return cells.Count == 0 ? null : cells[^1].PrimaryKey;
+    }
+
+    /// <summary>Deletes all rows in <paramref name="tableName"/> and releases their pages back to the free
+    /// list, leaving the table structure intact.</summary>
+    public void TruncateTable(string tableName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        var table = GetTable(tableName);
+
+        // Remove all secondary index entries by rebuilding each index as empty.
+        var indexes = GetIndexesForTable(tableName);
+        foreach (var index in indexes)
+        {
+            new SecondaryBPlusTree(_pager, index.RootPageId).ReleaseAllPages();
+            // Re-allocate a fresh empty root page so the index still exists.
+            var newIndexRoot = _pager.AllocatePage(PageType.IndexLeaf);
+            _indexCatalog!.UpdateEntry(index with { RootPageId = newIndexRoot });
+        }
+
+        // Release all table data pages and allocate a fresh empty root.
+        new BPlusTree(_pager, table.RootPageId).ReleaseAllPages();
+        var newRoot = _pager.AllocatePage(PageType.TableLeaf);
+        _catalog.Update(new TableInfo(table.TableId, table.TableName, newRoot, table.Schema));
+
+        IncrementSchemaVersion();
+    }
+
+    // ── View catalog ────────────────────────────────────────────────────────
+
+    public ViewInfo CreateView(string viewName, string selectSql)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(viewName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(selectSql);
+
+        var viewCatalog = EnsureViewCatalog();
+        var status = viewCatalog.TryInsert(viewName, selectSql, out var view);
+
+        return status switch
+        {
+            ViewCatalogInsertStatus.DuplicateViewName => throw new InvalidOperationException($"View '{viewName}' already exists."),
+            ViewCatalogInsertStatus.CatalogFull => throw new InvalidOperationException("The view catalog page is full."),
+            _ => view!
+        };
+    }
+
+    public bool TryGetView(string viewName, out ViewInfo? view)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(viewName);
+        if (_viewCatalog is null) { view = null; return false; }
+        return _viewCatalog.TryGetByName(viewName, out view);
+    }
+
+    public IReadOnlyList<ViewInfo> GetAllViews() => _viewCatalog?.ReadAll() ?? [];
+
+    public void DropView(string viewName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(viewName);
+
+        if (_viewCatalog is null || !_viewCatalog.TryGetByName(viewName, out var view))
+            throw new InvalidOperationException($"View '{viewName}' does not exist.");
+
+        _viewCatalog.Delete(view!.ViewId);
+        IncrementSchemaVersion();
+    }
+
     public void Dispose()
     {
         if (_ownsPager)
@@ -454,6 +530,18 @@ public sealed class StorageEngine : IDisposable
         _pager.WriteDatabaseHeader(header with { IndexCatalogRootPageId = rootPageId });
         _indexCatalog = new IndexCatalogStore(_pager, rootPageId);
         return _indexCatalog;
+    }
+
+    private ViewCatalogStore EnsureViewCatalog()
+    {
+        if (_viewCatalog is not null)
+            return _viewCatalog;
+
+        var rootPageId = _pager.AllocatePage(PageType.TableLeaf);
+        var header = _pager.ReadDatabaseHeader();
+        _pager.WriteDatabaseHeader(header with { ViewCatalogRootPageId = rootPageId });
+        _viewCatalog = new ViewCatalogStore(_pager, rootPageId);
+        return _viewCatalog;
     }
 
     private static void InsertIndexEntry(
