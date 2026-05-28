@@ -34,7 +34,7 @@ internal static class SqlTokenizer
 
             if (char.IsDigit(current) || (current == '-' && index + 1 < sql.Length && char.IsDigit(sql[index + 1])))
             {
-                tokens.Add(ReadIntegerLiteral(sql, ref index));
+                tokens.Add(ReadNumericLiteral(sql, ref index));
                 continue;
             }
 
@@ -145,6 +145,34 @@ internal static class SqlTokenizer
         };
 
         return new SqlToken(kind, lexeme);
+    }
+
+    private static SqlToken ReadNumericLiteral(string sql, ref int index)
+    {
+        var start = index;
+        index++;
+
+        while (index < sql.Length && char.IsDigit(sql[index]))
+        {
+            index++;
+        }
+
+        if (index < sql.Length && sql[index] == '.' && index + 1 < sql.Length && char.IsDigit(sql[index + 1]))
+        {
+            index++; // consume '.'
+            while (index < sql.Length && char.IsDigit(sql[index]))
+            {
+                index++;
+            }
+
+            var floatLexeme = sql[start..index];
+            var floatValue = double.Parse(floatLexeme, CultureInfo.InvariantCulture);
+            return new SqlToken(SqlTokenKind.FloatLiteral, floatLexeme, floatValue);
+        }
+
+        var lexeme = sql[start..index];
+        _ = long.Parse(lexeme, CultureInfo.InvariantCulture);
+        return new SqlToken(SqlTokenKind.IntegerLiteral, lexeme);
     }
 
     private static SqlToken ReadIntegerLiteral(string sql, ref int index)
@@ -290,5 +318,6 @@ internal enum SqlTokenKind
     Add = 62,
     Column = 63,
     Rename = 64,
-    To = 65
+    To = 65,
+    FloatLiteral = 66
 }

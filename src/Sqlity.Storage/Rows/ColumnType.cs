@@ -7,5 +7,7 @@ public enum ColumnType : byte
     String = 2,
     Blob = 3,
     Boolean = 4,
-    Float64 = 5
+    Float64 = 5,
+    Date = 6,
+    DateTime = 7
 }

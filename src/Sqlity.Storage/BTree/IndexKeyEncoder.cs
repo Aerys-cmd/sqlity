@@ -76,6 +76,20 @@ public static class IndexKeyEncoder
                 destination.Write(blob);
                 break;
 
+            case ColumnType.Float64:
+                EncodeFloat64(destination, (double)value);
+                break;
+
+            case ColumnType.Date:
+                var dateOnly = value is string ds ? DateOnly.Parse(ds) : (DateOnly)value;
+                EncodeString(destination, dateOnly.ToString("yyyy-MM-dd"));
+                break;
+
+            case ColumnType.DateTime:
+                var dateTime = value is string dts ? System.DateTime.Parse(dts, null, System.Globalization.DateTimeStyles.RoundtripKind) : (DateTime)value;
+                EncodeString(destination, dateTime.ToString("O"));
+                break;
+
             default:
                 throw new NotSupportedException($"Cannot encode column type {columnType} as an index key.");
         }
@@ -104,5 +118,21 @@ public static class IndexKeyEncoder
         var bytes = Utf8.GetBytes(value);
         destination.Write(bytes);
         destination.WriteByte(0x00); // null terminator as column separator
+    }
+
+    /// <summary>
+    /// Encodes a double in sort-preserving big-endian form.
+    /// For positive values (sign bit = 0), flip only the sign bit so positives
+    /// sort after negatives. For negative values (sign bit = 1), flip all bits
+    /// so that more-negative values sort before less-negative ones.
+    /// </summary>
+    private static void EncodeFloat64(Stream destination, double value)
+    {
+        var bits = BitConverter.DoubleToInt64Bits(value);
+        // If sign bit is set (negative), flip all bits; otherwise flip only sign bit.
+        var encoded = bits < 0 ? ~bits : bits ^ long.MinValue;
+        Span<byte> buf = stackalloc byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64BigEndian(buf, encoded);
+        destination.Write(buf);
     }
 }

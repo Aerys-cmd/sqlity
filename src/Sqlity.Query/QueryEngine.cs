@@ -652,9 +652,14 @@ public sealed class QueryEngine : IDisposable
         return column.Type switch
         {
             ColumnType.Int64 when literal.Value is long longValue => longValue,
+            ColumnType.Int64 when literal.Value is double doubleAsLong => (long)doubleAsLong,
             ColumnType.String when literal.Value is string stringValue => stringValue,
             ColumnType.Blob when literal.Value is byte[] blobValue => blobValue,
             ColumnType.Boolean when literal.Value is bool boolValue => boolValue,
+            ColumnType.Float64 when literal.Value is double doubleValue => doubleValue,
+            ColumnType.Float64 when literal.Value is long longAsDouble => (double)longAsDouble,
+            ColumnType.Date when literal.Value is string dateString => DateOnly.Parse(dateString, System.Globalization.CultureInfo.InvariantCulture),
+            ColumnType.DateTime when literal.Value is string dtString => DateTime.Parse(dtString, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind),
             _ => throw new InvalidOperationException($"Value '{literal.Value}' is not valid for column '{column.Name}' of type {column.Type}.")
         };
     }
@@ -666,6 +671,9 @@ public sealed class QueryEngine : IDisposable
             "STRING" or "TEXT" => ColumnType.String,
             "BLOB" => ColumnType.Blob,
             "BOOLEAN" or "BOOL" => ColumnType.Boolean,
+            "REAL" or "FLOAT" or "FLOAT64" or "DOUBLE" => ColumnType.Float64,
+            "DATE" => ColumnType.Date,
+            "DATETIME" => ColumnType.DateTime,
             _ => throw new InvalidOperationException($"Unsupported SQL column type '{typeName}'.")
         };
 
@@ -779,7 +787,15 @@ public sealed class QueryEngine : IDisposable
                     break;
                 case AggregateSelectItem aggItem:
                     outNames.Add(FormatAggregateName(aggItem));
-                    outTypes.Add(aggItem.Fn == AggregateFn.Avg ? ColumnType.Float64 : ColumnType.Int64);
+                    if (aggItem.Fn == AggregateFn.Count)
+                        outTypes.Add(ColumnType.Int64);
+                    else if (aggItem.Fn == AggregateFn.Avg)
+                        outTypes.Add(ColumnType.Float64);
+                    else if (aggItem.Argument is not null &&
+                             table.Schema.Columns[table.Schema.GetColumnOrdinal(aggItem.Argument.ColumnName)].Type == ColumnType.Float64)
+                        outTypes.Add(ColumnType.Float64);
+                    else
+                        outTypes.Add(ColumnType.Int64);
                     break;
             }
         }
@@ -857,7 +873,10 @@ public sealed class QueryEngine : IDisposable
 
         return item.Fn switch
         {
-            AggregateFn.Sum => nonNullValues.Aggregate(0L, (acc, v) => acc + Convert.ToInt64(v)),
+            AggregateFn.Sum when nonNullValues.Any(v => v is double) =>
+                nonNullValues.Sum(v => Convert.ToDouble(v)),
+            AggregateFn.Sum =>
+                nonNullValues.Aggregate(0L, (acc, v) => acc + Convert.ToInt64(v)),
             AggregateFn.Min => nonNullValues.Cast<IComparable>().Min(),
             AggregateFn.Max => nonNullValues.Cast<IComparable>().Max(),
             AggregateFn.Avg => nonNullValues.Average(v => Convert.ToDouble(v)),

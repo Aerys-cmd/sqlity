@@ -551,6 +551,7 @@ internal sealed class SqlParser
         return token.Kind switch
         {
             SqlTokenKind.IntegerLiteral => new SqlLiteral(long.Parse(token.Lexeme, CultureInfo.InvariantCulture)),
+            SqlTokenKind.FloatLiteral => new SqlLiteral((double)(token.Value ?? 0.0)),
             SqlTokenKind.StringLiteral => new SqlLiteral(token.Value ?? string.Empty),
             SqlTokenKind.BlobLiteral => new SqlLiteral((byte[])(token.Value ?? Array.Empty<byte>())),
             SqlTokenKind.True => new SqlLiteral(true),

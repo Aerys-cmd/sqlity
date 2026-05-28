@@ -124,4 +124,95 @@ public sealed class RowSerializerTests
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+
+    // ── Float64 round-trip ────────────────────────────────────────────────────
+
+    [Fact]
+    public void RowSerializer_round_trips_float64_value()
+    {
+        var schema = new TableSchema(
+            "readings",
+            new[]
+            {
+                new ColumnDefinition("id", ColumnType.Int64),
+                new ColumnDefinition("value", ColumnType.Float64)
+            },
+            primaryKeyOrdinal: 0);
+
+        var values = new object?[] { 1L, 3.14159265358979 };
+
+        var serializer = new RowSerializer();
+        var buffer = new byte[serializer.GetRequiredSize(schema, values)];
+        var bytesWritten = serializer.Write(schema, values, buffer);
+        var result = serializer.Read(schema, buffer.AsSpan(0, bytesWritten));
+
+        Assert.Equal(1L, result[0]);
+        Assert.Equal(3.14159265358979, (double)result[1]!);
+    }
+
+    [Fact]
+    public void RowSerializer_round_trips_negative_float64_value()
+    {
+        var schema = new TableSchema(
+            "t",
+            new[] { new ColumnDefinition("id", ColumnType.Int64), new ColumnDefinition("v", ColumnType.Float64) },
+            primaryKeyOrdinal: 0);
+
+        var values = new object?[] { 1L, -2.718281828 };
+
+        var serializer = new RowSerializer();
+        var buffer = new byte[serializer.GetRequiredSize(schema, values)];
+        var bytesWritten = serializer.Write(schema, values, buffer);
+        var result = serializer.Read(schema, buffer.AsSpan(0, bytesWritten));
+
+        Assert.Equal(-2.718281828, (double)result[1]!);
+    }
+
+    // ── Date / DateTime round-trip ────────────────────────────────────────────
+
+    [Fact]
+    public void RowSerializer_round_trips_date_value()
+    {
+        var schema = new TableSchema(
+            "events",
+            new[]
+            {
+                new ColumnDefinition("id", ColumnType.Int64),
+                new ColumnDefinition("on_date", ColumnType.Date)
+            },
+            primaryKeyOrdinal: 0);
+
+        var date = new DateOnly(2024, 3, 15);
+        var values = new object?[] { 1L, date };
+
+        var serializer = new RowSerializer();
+        var buffer = new byte[serializer.GetRequiredSize(schema, values)];
+        var bytesWritten = serializer.Write(schema, values, buffer);
+        var result = serializer.Read(schema, buffer.AsSpan(0, bytesWritten));
+
+        Assert.Equal(date, (DateOnly)result[1]!);
+    }
+
+    [Fact]
+    public void RowSerializer_round_trips_datetime_value()
+    {
+        var schema = new TableSchema(
+            "log",
+            new[]
+            {
+                new ColumnDefinition("id", ColumnType.Int64),
+                new ColumnDefinition("recorded_at", ColumnType.DateTime)
+            },
+            primaryKeyOrdinal: 0);
+
+        var dt = new DateTime(2024, 6, 1, 12, 30, 45, DateTimeKind.Utc);
+        var values = new object?[] { 1L, dt };
+
+        var serializer = new RowSerializer();
+        var buffer = new byte[serializer.GetRequiredSize(schema, values)];
+        var bytesWritten = serializer.Write(schema, values, buffer);
+        var result = serializer.Read(schema, buffer.AsSpan(0, bytesWritten));
+
+        Assert.Equal(dt, (DateTime)result[1]!);
+    }
 }

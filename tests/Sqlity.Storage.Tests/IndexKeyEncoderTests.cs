@@ -152,4 +152,62 @@ public sealed class IndexKeyEncoderTests
         Assert.True(withPk.Length > withoutPk.Length);
         Assert.Equal(withoutPk, withPk[..withoutPk.Length]);
     }
+
+    // ── Float64 ────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Float64_negative_sorts_before_zero_before_positive()
+    {
+        var schema = MakeSchema(new ColumnDefinition("v", ColumnType.Float64));
+        var negKey = Encode(schema, 1, -1.0);
+        var zeroKey = Encode(schema, 1, 0.0);
+        var posKey = Encode(schema, 1, 1.0);
+
+        Assert.True(negKey.AsSpan().SequenceCompareTo(zeroKey) < 0);
+        Assert.True(zeroKey.AsSpan().SequenceCompareTo(posKey) < 0);
+    }
+
+    [Fact]
+    public void Float64_more_negative_sorts_before_less_negative()
+    {
+        var schema = MakeSchema(new ColumnDefinition("v", ColumnType.Float64));
+        var moreNeg = Encode(schema, 1, -100.0);
+        var lessNeg = Encode(schema, 1, -1.0);
+
+        Assert.True(moreNeg.AsSpan().SequenceCompareTo(lessNeg) < 0);
+    }
+
+    [Fact]
+    public void Float64_smaller_positive_sorts_before_larger_positive()
+    {
+        var schema = MakeSchema(new ColumnDefinition("v", ColumnType.Float64));
+        var small = Encode(schema, 1, 1.5);
+        var large = Encode(schema, 1, 2.5);
+
+        Assert.True(small.AsSpan().SequenceCompareTo(large) < 0);
+    }
+
+    // ── Date ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Date_earlier_sorts_before_later()
+    {
+        var schema = MakeSchema(new ColumnDefinition("d", ColumnType.Date));
+        var earlier = Encode(schema, 1, new DateOnly(2024, 1, 1));
+        var later = Encode(schema, 1, new DateOnly(2024, 12, 31));
+
+        Assert.True(earlier.AsSpan().SequenceCompareTo(later) < 0);
+    }
+
+    // ── DateTime ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void DateTime_earlier_sorts_before_later()
+    {
+        var schema = MakeSchema(new ColumnDefinition("dt", ColumnType.DateTime));
+        var earlier = Encode(schema, 1, new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var later = Encode(schema, 1, new DateTime(2024, 6, 1, 12, 0, 0, DateTimeKind.Utc));
+
+        Assert.True(earlier.AsSpan().SequenceCompareTo(later) < 0);
+    }
 }

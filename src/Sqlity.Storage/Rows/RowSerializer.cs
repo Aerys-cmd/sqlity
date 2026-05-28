@@ -118,6 +118,9 @@ public sealed class RowSerializer
             ColumnType.String => value is string stringValue ? Utf8.GetByteCount(stringValue) : throw new InvalidOperationException("String columns require string values."),
             ColumnType.Blob => value is byte[] blobValue ? blobValue.Length : throw new InvalidOperationException("Blob columns require byte[] values."),
             ColumnType.Boolean => value is bool ? sizeof(byte) : throw new InvalidOperationException("Boolean columns require bool values."),
+            ColumnType.Float64 => value is double ? sizeof(double) : throw new InvalidOperationException("Float64 columns require double values."),
+            ColumnType.Date => value is DateOnly dateValue ? Utf8.GetByteCount(dateValue.ToString("yyyy-MM-dd")) : throw new InvalidOperationException("Date columns require DateOnly values."),
+            ColumnType.DateTime => value is DateTime dtValue ? Utf8.GetByteCount(dtValue.ToString("O")) : throw new InvalidOperationException("DateTime columns require DateTime values."),
             _ => throw new NotSupportedException($"Column type {type} is not supported.")
         };
     }
@@ -129,6 +132,9 @@ public sealed class RowSerializer
             ColumnType.String => WriteString((string)value!, destination),
             ColumnType.Blob => WriteBlob((byte[])value!, destination),
             ColumnType.Boolean => WriteBoolean((bool)value!, destination),
+            ColumnType.Float64 => WriteFloat64((double)value!, destination),
+            ColumnType.Date => WriteString(((DateOnly)value!).ToString("yyyy-MM-dd"), destination),
+            ColumnType.DateTime => WriteString(((DateTime)value!).ToString("O"), destination),
             _ => throw new NotSupportedException($"Column type {type} is not supported.")
         };
 
@@ -139,6 +145,9 @@ public sealed class RowSerializer
             ColumnType.String => Utf8.GetString(source[..payloadLength]),
             ColumnType.Blob => source[..payloadLength].ToArray(),
             ColumnType.Boolean => source[0] != 0,
+            ColumnType.Float64 => BinaryPrimitives.ReadDoubleLittleEndian(source[..sizeof(double)]),
+            ColumnType.Date => DateOnly.ParseExact(Utf8.GetString(source[..payloadLength]), "yyyy-MM-dd"),
+            ColumnType.DateTime => DateTime.ParseExact(Utf8.GetString(source[..payloadLength]), "O", null, System.Globalization.DateTimeStyles.RoundtripKind),
             _ => throw new NotSupportedException($"Column type {type} is not supported.")
         };
 
@@ -160,6 +169,12 @@ public sealed class RowSerializer
     {
         destination[0] = value ? (byte)1 : (byte)0;
         return sizeof(byte);
+    }
+
+    private static int WriteFloat64(double value, Span<byte> destination)
+    {
+        BinaryPrimitives.WriteDoubleLittleEndian(destination[..sizeof(double)], value);
+        return sizeof(double);
     }
 
     private static void ValidateValueCount(TableSchema schema, IReadOnlyList<object?> values)

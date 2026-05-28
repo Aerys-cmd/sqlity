@@ -12,6 +12,9 @@ internal static class TypeMap
         ColumnType.String => typeof(string),
         ColumnType.Blob => typeof(byte[]),
         ColumnType.Boolean => typeof(bool),
+        ColumnType.Float64 => typeof(double),
+        ColumnType.Date => typeof(DateOnly),
+        ColumnType.DateTime => typeof(DateTime),
         _ => typeof(object),
     };
 
@@ -22,6 +25,9 @@ internal static class TypeMap
         ColumnType.String => DbType.String,
         ColumnType.Blob => DbType.Binary,
         ColumnType.Boolean => DbType.Boolean,
+        ColumnType.Float64 => DbType.Double,
+        ColumnType.Date => DbType.Date,
+        ColumnType.DateTime => DbType.DateTime,
         _ => DbType.Object
     };
 }

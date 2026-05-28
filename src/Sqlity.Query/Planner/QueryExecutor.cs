@@ -144,6 +144,9 @@ internal sealed class QueryExecutor
             };
         }
 
+        // Coerce literal to match column type for cross-type numerics and date strings.
+        literalValue = CoerceLiteralToColumnType(columnValue, literalValue);
+
         if (columnValue is not IComparable comparable)
             throw new InvalidOperationException($"Column value of type '{columnValue.GetType().Name}' does not support comparison.");
 
@@ -168,5 +171,18 @@ internal sealed class QueryExecutor
             ComparisonOp.GreaterThanOrEquals => cmp >= 0,
             _ => throw new InvalidOperationException($"Unknown comparison operator {op}.")
         };
+    }
+
+    private static object CoerceLiteralToColumnType(object columnValue, object literalValue)
+    {
+        if (columnValue is double && literalValue is long longToDouble)
+            return (double)longToDouble;
+        if (columnValue is long && literalValue is double doubleToLong)
+            return (long)doubleToLong;
+        if (columnValue is DateOnly && literalValue is string dateString)
+            return DateOnly.Parse(dateString, System.Globalization.CultureInfo.InvariantCulture);
+        if (columnValue is DateTime && literalValue is string dtString)
+            return DateTime.Parse(dtString, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind);
+        return literalValue;
     }
 }

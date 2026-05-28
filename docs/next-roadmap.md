@@ -37,13 +37,13 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - `GROUP BY` / `HAVING` — **done**
 - scalar subqueries and `IN (subquery)`
 - `DROP TABLE` and `ALTER TABLE` — **done** (`DROP TABLE`, `ALTER TABLE … RENAME TO`, `ALTER TABLE … ADD COLUMN [NOT NULL]`, `ALTER TABLE … RENAME COLUMN … TO`)
-- additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME`
+- additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME` — **done**
 
 ## 6. EF Core provider
 
 - implement the EF Core provider once the ADO.NET surface is stable
 
-## 7. Developer workflow
+## 7. Developer workflow ✅
 
-- add a tiny CLI that accepts SQL text and prints result rows
-- document the minimal `QueryEngine(filePath)` path for creating or reopening a `.sqlity` file
+- add a tiny CLI that accepts SQL text and prints result rows — **done**
+- document the minimal `QueryEngine(filePath)` path for creating or reopening a `.sqlity` file — **done**
