@@ -95,6 +95,34 @@ internal sealed class CatalogStore
         return cells.Count == 0 ? 1 : cells[^1].PrimaryKey + 1;
     }
 
+    public void Delete(long tableId)
+    {
+        var page = new TableLeafPage(_pager.ReadPage(_catalogRootPageId));
+        var status = page.TryDelete(tableId);
+
+        if (status == TableLeafDeleteStatus.NotFound)
+            throw new InvalidOperationException($"Catalog entry with id {tableId} not found.");
+
+        _pager.WritePage(page.Page);
+    }
+
+    public void Update(TableInfo updated)
+    {
+        ArgumentNullException.ThrowIfNull(updated);
+
+        var payload = SerializeEntry(updated);
+        var page = new TableLeafPage(_pager.ReadPage(_catalogRootPageId));
+        var status = page.TryUpdate(new TableLeafCell(updated.TableId, payload));
+
+        if (status == TableLeafUpdateStatus.NotFound)
+            throw new InvalidOperationException($"Catalog entry with id {updated.TableId} not found.");
+
+        if (status == TableLeafUpdateStatus.InsufficientSpace)
+            throw new InvalidOperationException("The catalog page does not have enough space to store the updated schema.");
+
+        _pager.WritePage(page.Page);
+    }
+
     private TableInfo ReadEntry(TableLeafCell cell)
     {
         var values = _rowSerializer.Read(CatalogSchema, cell.Payload);

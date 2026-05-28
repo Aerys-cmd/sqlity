@@ -120,6 +120,44 @@ internal sealed class IndexCatalogStore
         return cells.Count == 0 ? 1 : cells[^1].PrimaryKey + 1;
     }
 
+    public void Delete(long indexId)
+    {
+        var page = new TableLeafPage(_pager.ReadPage(_catalogRootPageId));
+        var status = page.TryDelete(indexId);
+
+        if (status == TableLeafDeleteStatus.NotFound)
+            throw new InvalidOperationException($"Index catalog entry with id {indexId} not found.");
+
+        _pager.WritePage(page.Page);
+    }
+
+    public void UpdateEntry(IndexInfo updated)
+    {
+        ArgumentNullException.ThrowIfNull(updated);
+
+        var metaBlob = _metaSerializer.Serialize(updated.Columns, updated.IsUnique);
+        var values = new object?[]
+        {
+            updated.IndexId,
+            updated.IndexName,
+            updated.TableName,
+            (long)updated.RootPageId,
+            metaBlob
+        };
+
+        var payload = SerializeValues(values);
+        var page = new TableLeafPage(_pager.ReadPage(_catalogRootPageId));
+        var status = page.TryUpdate(new TableLeafCell(updated.IndexId, payload));
+
+        if (status == TableLeafUpdateStatus.NotFound)
+            throw new InvalidOperationException($"Index catalog entry with id {updated.IndexId} not found.");
+
+        if (status == TableLeafUpdateStatus.InsufficientSpace)
+            throw new InvalidOperationException("The index catalog page does not have enough space to store the updated entry.");
+
+        _pager.WritePage(page.Page);
+    }
+
     private IndexInfo ReadEntry(TableLeafCell cell)
     {
         var values = _rowSerializer.Read(CatalogSchema, cell.Payload);

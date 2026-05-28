@@ -82,6 +82,44 @@ internal sealed class SecondaryBPlusTree
     }
 
     /// <summary>
+    /// Releases every page belonging to this secondary B+ tree back to the pager's free list.
+    /// After this call the tree is no longer usable.
+    /// </summary>
+    public void ReleaseAllPages()
+    {
+        var collected = new HashSet<uint>();
+        var toVisit = new Stack<uint>();
+        toVisit.Push(_rootPageId);
+
+        while (toVisit.Count > 0)
+        {
+            var pageId = toVisit.Pop();
+            if (!collected.Add(pageId))
+                continue;
+
+            var page = _pager.ReadPage(pageId);
+            var pageType = page.ReadHeader().PageType;
+
+            if (pageType == PageType.IndexInternal)
+            {
+                var internalPage = new IndexInternalPage(page);
+                toVisit.Push(internalPage.LeftmostChildPageId);
+                foreach (var cell in internalPage.ReadAllCells())
+                    toVisit.Push(cell.RightChildPageId);
+            }
+            else if (pageType == PageType.IndexLeaf)
+            {
+                var next = new IndexLeafPage(page).NextLeafPageId;
+                if (next != 0)
+                    toVisit.Push(next);
+            }
+        }
+
+        foreach (var pageId in collected)
+            _pager.ReleasePage(pageId);
+    }
+
+    /// <summary>
     /// Scans the leaf chain and returns all entries whose keys fall within
     /// <paramref name="range"/>. Results are in ascending key order.
     /// </summary>

@@ -75,12 +75,12 @@ public sealed class RowSerializer
         }
 
         var columnCount = source[offset++];
-        if (columnCount != schema.Columns.Count)
+        if (columnCount > schema.Columns.Count)
         {
-            throw new InvalidDataException($"Expected {schema.Columns.Count} columns, but found {columnCount}.");
+            throw new InvalidDataException($"Row has {columnCount} columns but schema only defines {schema.Columns.Count}.");
         }
 
-        var values = new object?[columnCount];
+        var values = new object?[schema.Columns.Count];
         for (var index = 0; index < columnCount; index++)
         {
             var expectedType = schema.Columns[index].Type;

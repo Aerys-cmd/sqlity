@@ -158,6 +158,116 @@ public sealed class StorageEngine : IDisposable
         return table!;
     }
 
+    public void DropTable(string tableName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        var table = GetTable(tableName);
+
+        // Drop all secondary indexes for this table first.
+        var indexes = GetIndexesForTable(tableName);
+        foreach (var index in indexes)
+        {
+            new SecondaryBPlusTree(_pager, index.RootPageId).ReleaseAllPages();
+            _indexCatalog!.Delete(index.IndexId);
+        }
+
+        // Release all table data pages.
+        new BPlusTree(_pager, table.RootPageId).ReleaseAllPages();
+
+        // Remove the table from the catalog.
+        _catalog.Delete(table.TableId);
+
+        IncrementSchemaVersion();
+    }
+
+    public void RenameTable(string oldName, string newName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newName);
+
+        var table = GetTable(oldName);
+
+        if (_catalog.TryGetByName(newName, out _))
+            throw new InvalidOperationException($"Table '{newName}' already exists.");
+
+        // Rebuild the schema with the new table name.
+        var newSchema = new TableSchema(newName, table.Schema.Columns, table.Schema.PrimaryKeyOrdinal);
+        _catalog.Update(new TableInfo(table.TableId, newName, table.RootPageId, newSchema));
+
+        // Update every index that referenced the old table name.
+        if (_indexCatalog is not null)
+        {
+            foreach (var index in _indexCatalog.GetByTable(oldName))
+                _indexCatalog.UpdateEntry(index with { TableName = newName });
+        }
+
+        IncrementSchemaVersion();
+    }
+
+    public void AddColumn(string tableName, ColumnDefinition column)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+        ArgumentNullException.ThrowIfNull(column);
+
+        var table = GetTable(tableName);
+
+        if (table.Schema.TryGetColumnOrdinal(column.Name, out _))
+            throw new InvalidOperationException($"Column '{column.Name}' already exists in table '{tableName}'.");
+
+        if (!column.IsNullable)
+        {
+            // A NOT NULL column can only be added to an empty table; otherwise NULL would
+            // appear in every existing row, violating the constraint.
+            var cells = new BPlusTree(_pager, table.RootPageId).ReadAll();
+            if (cells.Count > 0)
+                throw new InvalidOperationException(
+                    $"Cannot add NOT NULL column '{column.Name}' to '{tableName}' because it already contains rows. " +
+                    "Add a nullable column instead.");
+        }
+
+        var newColumns = table.Schema.Columns.Append(column).ToArray();
+        var newSchema = new TableSchema(tableName, newColumns, table.Schema.PrimaryKeyOrdinal);
+        _catalog.Update(new TableInfo(table.TableId, tableName, table.RootPageId, newSchema));
+
+        IncrementSchemaVersion();
+    }
+
+    public void RenameColumn(string tableName, string oldColumnName, string newColumnName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldColumnName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newColumnName);
+
+        var table = GetTable(tableName);
+
+        if (!table.Schema.TryGetColumnOrdinal(oldColumnName, out var ordinal))
+            throw new InvalidOperationException($"Column '{oldColumnName}' does not exist in table '{tableName}'.");
+
+        if (table.Schema.TryGetColumnOrdinal(newColumnName, out _))
+            throw new InvalidOperationException($"Column '{newColumnName}' already exists in table '{tableName}'.");
+
+        var newColumns = table.Schema.Columns
+            .Select((c, i) => i == ordinal ? c with { Name = newColumnName } : c)
+            .ToArray();
+        var newSchema = new TableSchema(tableName, newColumns, table.Schema.PrimaryKeyOrdinal);
+        _catalog.Update(new TableInfo(table.TableId, tableName, table.RootPageId, newSchema));
+
+        // Update any index metadata that references the old column name.
+        if (_indexCatalog is not null)
+        {
+            foreach (var index in _indexCatalog.GetByTable(tableName))
+            {
+                var updatedColumns = index.Columns
+                    .Select(c => string.Equals(c, oldColumnName, StringComparison.OrdinalIgnoreCase) ? newColumnName : c)
+                    .ToList();
+                _indexCatalog.UpdateEntry(index with { Columns = updatedColumns });
+            }
+        }
+
+        IncrementSchemaVersion();
+    }
+
     public void Insert(string tableName, IReadOnlyList<object?> values)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);

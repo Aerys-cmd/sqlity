@@ -25,6 +25,8 @@ internal sealed class SqlParser
             SqlTokenKind.Begin => ParseBegin(),
             SqlTokenKind.Commit => ParseCommit(),
             SqlTokenKind.Rollback => ParseRollback(),
+            SqlTokenKind.Drop => ParseDrop(),
+            SqlTokenKind.Alter => ParseAlter(),
             _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
@@ -50,6 +52,8 @@ internal sealed class SqlParser
                 SqlTokenKind.Begin => ParseBegin(),
                 SqlTokenKind.Commit => ParseCommit(),
                 SqlTokenKind.Rollback => ParseRollback(),
+                SqlTokenKind.Drop => ParseDrop(),
+                SqlTokenKind.Alter => ParseAlter(),
                 _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
             };
 
@@ -87,6 +91,54 @@ internal sealed class SqlParser
         if (next.Kind == SqlTokenKind.Unique || next.Kind == SqlTokenKind.Index)
             return ParseCreateIndex();
         return ParseCreateTable();
+    }
+
+    private DropTableStatement ParseDrop()
+    {
+        Expect(SqlTokenKind.Drop);
+        Expect(SqlTokenKind.Table);
+        var tableName = ExpectIdentifier("Expected a table name after DROP TABLE.");
+        return new DropTableStatement(tableName);
+    }
+
+    private SqlStatement ParseAlter()
+    {
+        Expect(SqlTokenKind.Alter);
+        Expect(SqlTokenKind.Table);
+        var tableName = ExpectIdentifier("Expected a table name after ALTER TABLE.");
+
+        if (Match(SqlTokenKind.Rename))
+        {
+            if (Match(SqlTokenKind.Column))
+            {
+                // ALTER TABLE t RENAME COLUMN old TO new
+                var oldColumn = ExpectIdentifier("Expected the old column name after RENAME COLUMN.");
+                Expect(SqlTokenKind.To);
+                var newColumn = ExpectIdentifier("Expected the new column name after TO.");
+                return new AlterTableRenameColumnStatement(tableName, oldColumn, newColumn);
+            }
+
+            // ALTER TABLE t RENAME TO new_name
+            Expect(SqlTokenKind.To);
+            var newName = ExpectIdentifier("Expected the new table name after RENAME TO.");
+            return new AlterTableRenameStatement(tableName, newName);
+        }
+
+        if (Match(SqlTokenKind.Add))
+        {
+            Match(SqlTokenKind.Column); // optional keyword
+            var columnName = ExpectIdentifier("Expected a column name after ADD COLUMN.");
+            var typeName = ExpectIdentifier("Expected a type name after the column name.");
+            var isNotNull = false;
+            if (Match(SqlTokenKind.Not))
+            {
+                Expect(SqlTokenKind.Null);
+                isNotNull = true;
+            }
+            return new AlterTableAddColumnStatement(tableName, new ColumnSpecification(columnName, typeName, IsPrimaryKey: false, IsNotNull: isNotNull));
+        }
+
+        throw new InvalidOperationException($"Unsupported ALTER TABLE form. Expected RENAME [TO|COLUMN] or ADD [COLUMN] but found '{Peek().Lexeme}'.");
     }
 
     private CreateTableStatement ParseCreateTable()
@@ -559,6 +611,14 @@ internal sealed record CreateTableStatement(string TableName, IReadOnlyList<Colu
 internal sealed record CreateIndexStatement(string IndexName, bool IsUnique, string TableName, IReadOnlyList<string> Columns) : SqlStatement;
 
 internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<SqlLiteral> Values) : SqlStatement;
+
+internal sealed record DropTableStatement(string TableName) : SqlStatement;
+
+internal sealed record AlterTableRenameStatement(string OldName, string NewName) : SqlStatement;
+
+internal sealed record AlterTableAddColumnStatement(string TableName, ColumnSpecification Column) : SqlStatement;
+
+internal sealed record AlterTableRenameColumnStatement(string TableName, string OldColumnName, string NewColumnName) : SqlStatement;
 
 internal sealed record SelectStatement(string TableName, IReadOnlyList<SelectItem>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins, IReadOnlyList<string>? GroupBy, HavingExpression? Having, IReadOnlyList<OrderByTerm>? OrderBy, int? Limit, int? Offset) : SqlStatement;
 

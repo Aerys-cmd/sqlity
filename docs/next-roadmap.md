@@ -36,7 +36,7 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - aggregate functions: `COUNT`, `SUM`, `MIN`, `MAX`, `AVG` — **done**
 - `GROUP BY` / `HAVING` — **done**
 - scalar subqueries and `IN (subquery)`
-- `DROP TABLE` and `ALTER TABLE`
+- `DROP TABLE` and `ALTER TABLE` — **done** (`DROP TABLE`, `ALTER TABLE … RENAME TO`, `ALTER TABLE … ADD COLUMN [NOT NULL]`, `ALTER TABLE … RENAME COLUMN … TO`)
 - additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME`
 
 ## 6. EF Core provider

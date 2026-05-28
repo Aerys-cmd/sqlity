@@ -129,6 +129,10 @@ public sealed class QueryEngine : IDisposable
                 SelectStatement select => ExecuteSelect(select),
                 DeleteStatement delete => ExecuteDelete(delete),
                 UpdateStatement update => ExecuteUpdate(update),
+                DropTableStatement dropTable => ExecuteDropTable(dropTable),
+                AlterTableRenameStatement alterRename => ExecuteAlterTableRename(alterRename),
+                AlterTableAddColumnStatement alterAdd => ExecuteAlterTableAddColumn(alterAdd),
+                AlterTableRenameColumnStatement alterRenameCol => ExecuteAlterTableRenameColumn(alterRenameCol),
                 _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
             };
 
@@ -186,6 +190,32 @@ public sealed class QueryEngine : IDisposable
     private QueryExecutionResult ExecuteCreateIndex(CreateIndexStatement statement)
     {
         _storage.CreateIndex(statement.IndexName, statement.TableName, statement.Columns, statement.IsUnique);
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteDropTable(DropTableStatement statement)
+    {
+        _storage.DropTable(statement.TableName);
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteAlterTableRename(AlterTableRenameStatement statement)
+    {
+        _storage.RenameTable(statement.OldName, statement.NewName);
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteAlterTableAddColumn(AlterTableAddColumnStatement statement)
+    {
+        var col = statement.Column;
+        var isNullable = !col.IsNotNull && !col.IsPrimaryKey;
+        _storage.AddColumn(statement.TableName, new ColumnDefinition(col.Name, ResolveColumnType(col.TypeName), isNullable));
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteAlterTableRenameColumn(AlterTableRenameColumnStatement statement)
+    {
+        _storage.RenameColumn(statement.TableName, statement.OldColumnName, statement.NewColumnName);
         return QueryExecutionResult.Empty(rowsAffected: 0);
     }
 

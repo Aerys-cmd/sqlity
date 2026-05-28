@@ -136,6 +136,11 @@ internal static class SqlTokenizer
             "MAX" => SqlTokenKind.Max,
             "AVG" => SqlTokenKind.Avg,
             "DROP" => SqlTokenKind.Drop,
+            "ALTER" => SqlTokenKind.Alter,
+            "ADD" => SqlTokenKind.Add,
+            "COLUMN" => SqlTokenKind.Column,
+            "RENAME" => SqlTokenKind.Rename,
+            "TO" => SqlTokenKind.To,
             _ => SqlTokenKind.Identifier
         };
 
@@ -280,5 +285,10 @@ internal enum SqlTokenKind
     Min = 57,
     Max = 58,
     Avg = 59,
-    Drop = 60
+    Drop = 60,
+    Alter = 61,
+    Add = 62,
+    Column = 63,
+    Rename = 64,
+    To = 65
 }
