@@ -91,11 +91,38 @@ internal sealed class QueryExecutor
         NullCheckExpression nullCheck =>
             EvaluateNullCheck(row[ResolveColumn(nullCheck.TableName, nullCheck.ColumnName, context)], nullCheck.ExpectNull),
 
+        InValuesExpression inValues =>
+            EvaluateInValues(row[ResolveColumn(inValues.TableName, inValues.ColumnName, context)], inValues.Values),
+
         _ => throw new InvalidOperationException($"Unknown WHERE expression type '{filter.GetType().Name}'.")
     };
 
     internal static bool EvaluateNullCheck(object? columnValue, bool expectNull) =>
         expectNull ? columnValue is null : columnValue is not null;
+
+    internal static bool EvaluateInValues(object? columnValue, IReadOnlyList<object?> values)
+    {
+        if (columnValue is null)
+            return false;
+
+        foreach (var v in values)
+        {
+            if (v is null)
+                continue;
+
+            try
+            {
+                if (EvaluateComparison(columnValue, ComparisonOp.Equals, v))
+                    return true;
+            }
+            catch (InvalidOperationException)
+            {
+                // Type mismatch — treat as non-equal and continue.
+            }
+        }
+
+        return false;
+    }
 
     internal static int ResolveColumn(
         string? tableName,

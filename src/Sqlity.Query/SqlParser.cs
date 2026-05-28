@@ -513,7 +513,25 @@ internal sealed class SqlParser
             return new NullCheckExpression(tableName, columnName, ExpectNull: true);
         }
 
+        if (Match(SqlTokenKind.In))
+        {
+            Expect(SqlTokenKind.OpenParen);
+            var subquery = ParseSelect();
+            Expect(SqlTokenKind.CloseParen);
+            return new InSubqueryExpression(tableName, columnName, subquery);
+        }
+
         var op = ParseComparisonOp();
+
+        // Scalar subquery: col = (SELECT …)
+        if (Peek().Kind == SqlTokenKind.OpenParen && PeekAhead(1).Kind == SqlTokenKind.Select)
+        {
+            Match(SqlTokenKind.OpenParen);
+            var subquery = ParseSelect();
+            Expect(SqlTokenKind.CloseParen);
+            return new ScalarSubqueryComparisonExpression(tableName, columnName, op, subquery);
+        }
+
         var value = ParseLiteral();
         return new ComparisonExpression(tableName, columnName, op, value);
     }
@@ -648,6 +666,15 @@ internal sealed record ComparisonExpression(string? TableName, string ColumnName
 internal sealed record BinaryLogicalExpression(WhereExpression Left, LogicalOp Op, WhereExpression Right) : WhereExpression;
 
 internal sealed record NullCheckExpression(string? TableName, string ColumnName, bool ExpectNull) : WhereExpression;
+
+/// <summary>col IN (SELECT …) — produced by the parser; resolved to <see cref="InValuesExpression"/> at execution time.</summary>
+internal sealed record InSubqueryExpression(string? TableName, string ColumnName, SelectStatement Subquery) : WhereExpression;
+
+/// <summary>col = (SELECT …) — produced by the parser; resolved to <see cref="ComparisonExpression"/> at execution time.</summary>
+internal sealed record ScalarSubqueryComparisonExpression(string? TableName, string ColumnName, ComparisonOp Op, SelectStatement Subquery) : WhereExpression;
+
+/// <summary>col IN (v1, v2, …) — produced at execution time after pre-evaluating an <see cref="InSubqueryExpression"/>.</summary>
+internal sealed record InValuesExpression(string? TableName, string ColumnName, IReadOnlyList<object?> Values) : WhereExpression;
 
 internal enum ComparisonOp { Equals, NotEquals, LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals }
 

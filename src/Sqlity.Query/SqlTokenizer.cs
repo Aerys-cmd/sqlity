@@ -141,6 +141,7 @@ internal static class SqlTokenizer
             "COLUMN" => SqlTokenKind.Column,
             "RENAME" => SqlTokenKind.Rename,
             "TO" => SqlTokenKind.To,
+            "IN" => SqlTokenKind.In,
             _ => SqlTokenKind.Identifier
         };
 
@@ -319,5 +320,6 @@ internal enum SqlTokenKind
     Column = 63,
     Rename = 64,
     To = 65,
-    FloatLiteral = 66
+    FloatLiteral = 66,
+    In = 67
 }

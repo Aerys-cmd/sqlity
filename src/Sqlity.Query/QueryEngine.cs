@@ -229,6 +229,10 @@ public sealed class QueryEngine : IDisposable
 
     private QueryExecutionResult ExecuteSelect(SelectStatement statement)
     {
+        var resolvedFilter = ResolveSubqueries(statement.Filter);
+        if (!ReferenceEquals(resolvedFilter, statement.Filter))
+            statement = statement with { Filter = resolvedFilter };
+
         var fromTable = _storage.GetTable(statement.TableName);
 
         // Aggregate queries are handled via a separate path.
@@ -340,6 +344,10 @@ public sealed class QueryEngine : IDisposable
     {
         var table = _storage.GetTable(statement.TableName);
 
+        var resolvedFilter = ResolveSubqueries(statement.Filter)!;
+        if (!ReferenceEquals(resolvedFilter, statement.Filter))
+            statement = statement with { Filter = resolvedFilter };
+
         if (TryExtractPrimaryKeyEquality(table, statement.Filter, out var pkValue))
         {
             _storage.Delete(table.TableName, pkValue);
@@ -362,6 +370,10 @@ public sealed class QueryEngine : IDisposable
     private QueryExecutionResult ExecuteUpdate(UpdateStatement statement)
     {
         var table = _storage.GetTable(statement.TableName);
+
+        var resolvedFilter = ResolveSubqueries(statement.Filter)!;
+        if (!ReferenceEquals(resolvedFilter, statement.Filter))
+            statement = statement with { Filter = resolvedFilter };
 
         if (TryExtractPrimaryKeyEquality(table, statement.Filter, out var pkValue))
         {
@@ -457,6 +469,55 @@ public sealed class QueryEngine : IDisposable
         }
 
         return boundValues;
+    }
+
+    // ── Subquery resolution ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Recursively walks a WHERE expression tree and pre-evaluates any subquery nodes,
+    /// replacing them with their computed equivalents so that <see cref="QueryExecutor.Evaluate"/>
+    /// remains a pure static method.
+    /// </summary>
+    private WhereExpression? ResolveSubqueries(WhereExpression? filter) => filter switch
+    {
+        null => null,
+        BinaryLogicalExpression binary => new BinaryLogicalExpression(
+            ResolveSubqueries(binary.Left)!,
+            binary.Op,
+            ResolveSubqueries(binary.Right)!),
+        InSubqueryExpression inSub => ResolveInSubquery(inSub),
+        ScalarSubqueryComparisonExpression scalarSub => ResolveScalarSubquery(scalarSub),
+        _ => filter
+    };
+
+    private InValuesExpression ResolveInSubquery(InSubqueryExpression inSub)
+    {
+        var result = ExecuteSubquery(inSub.Subquery);
+        var values = result.Rows.Select(row => row.Length > 0 ? row[0] : null).ToList();
+        return new InValuesExpression(inSub.TableName, inSub.ColumnName, values);
+    }
+
+    private ComparisonExpression ResolveScalarSubquery(ScalarSubqueryComparisonExpression scalarSub)
+    {
+        var result = ExecuteSubquery(scalarSub.Subquery);
+        if (result.Rows.Count > 1)
+            throw new InvalidOperationException("Scalar subquery returned more than one row.");
+
+        object? value = result.Rows.Count == 0 || result.Rows[0].Length == 0
+            ? null
+            : result.Rows[0][0];
+
+        return new ComparisonExpression(scalarSub.TableName, scalarSub.ColumnName, scalarSub.Op, new SqlLiteral(value));
+    }
+
+    /// <summary>Executes a subquery SELECT within the current transaction context (no auto-commit).</summary>
+    private QueryExecutionResult ExecuteSubquery(SelectStatement subquery)
+    {
+        var resolvedFilter = ResolveSubqueries(subquery.Filter);
+        if (!ReferenceEquals(resolvedFilter, subquery.Filter))
+            subquery = subquery with { Filter = resolvedFilter };
+
+        return ExecuteSelect(subquery);
     }
 
     /// <summary>

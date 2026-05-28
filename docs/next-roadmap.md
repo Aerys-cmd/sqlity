@@ -29,13 +29,13 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - automatic index maintenance on `INSERT`, `DELETE`, and `UPDATE` — **done**
 - rule-based logical/physical query planner: equality predicates on leading index columns produce an index seek; unmatched predicates become a post-filter — **done**
 
-## 5. Wider SQL surface ✅ (core subset)
+## 5. Wider SQL surface ✅
 
 - `ORDER BY` (with `ASC` / `DESC`), multi-column, index-aware optimization — **done**
 - `LIMIT` / `OFFSET` — **done**
 - aggregate functions: `COUNT`, `SUM`, `MIN`, `MAX`, `AVG` — **done**
 - `GROUP BY` / `HAVING` — **done**
-- scalar subqueries and `IN (subquery)`
+- scalar subqueries and `IN (subquery)` — **done**
 - `DROP TABLE` and `ALTER TABLE` — **done** (`DROP TABLE`, `ALTER TABLE … RENAME TO`, `ALTER TABLE … ADD COLUMN [NOT NULL]`, `ALTER TABLE … RENAME COLUMN … TO`)
 - additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME` — **done**
 
