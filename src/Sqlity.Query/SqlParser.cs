@@ -729,6 +729,18 @@ internal sealed class SqlParser
         if (Peek().Kind == SqlTokenKind.Case)
             return ParseCaseWhenWhereAtom();
 
+        // EXISTS (SELECT …) / NOT EXISTS (SELECT …)
+        if (Peek().Kind == SqlTokenKind.Exists ||
+            (Peek().Kind == SqlTokenKind.Not && PeekAhead(1).Kind == SqlTokenKind.Exists))
+        {
+            bool existsNegated = Match(SqlTokenKind.Not);
+            Advance(); // consume EXISTS
+            Expect(SqlTokenKind.OpenParen);
+            var subquery = ParseSelect();
+            Expect(SqlTokenKind.CloseParen);
+            return new ExistsExpression(subquery, Negated: existsNegated);
+        }
+
         string? tableName = null;
         var columnName = ExpectIdentifier("Expected a column name in the WHERE condition.");
         if (Match(SqlTokenKind.Dot))
@@ -1005,6 +1017,12 @@ internal sealed record InValuesExpression(string? TableName, string ColumnName, 
 internal sealed record LikeExpression(string? TableName, string ColumnName, string Pattern, bool CaseInsensitive, bool Negated = false) : WhereExpression;
 
 internal sealed record BetweenExpression(string? TableName, string ColumnName, SqlLiteral Low, SqlLiteral High, bool Negated = false) : WhereExpression;
+
+/// <summary>EXISTS (SELECT …) / NOT EXISTS (SELECT …) — produced by the parser; resolved to <see cref="BoolLiteralExpression"/> at execution time.</summary>
+internal sealed record ExistsExpression(SelectStatement Subquery, bool Negated = false) : WhereExpression;
+
+/// <summary>A constant boolean — produced at execution time after pre-evaluating an <see cref="ExistsExpression"/>.</summary>
+internal sealed record BoolLiteralExpression(bool Value) : WhereExpression;
 
 internal enum ComparisonOp { Equals, NotEquals, LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals }
 

@@ -645,6 +645,7 @@ public sealed class QueryEngine : IDisposable
             ResolveSubqueries(binary.Right)!),
         InSubqueryExpression inSub => ResolveInSubquery(inSub),
         ScalarSubqueryComparisonExpression scalarSub => ResolveScalarSubquery(scalarSub),
+        ExistsExpression exists => ResolveExists(exists),
         _ => filter
     };
 
@@ -666,6 +667,13 @@ public sealed class QueryEngine : IDisposable
             : result.Rows[0][0];
 
         return new ComparisonExpression(scalarSub.TableName, scalarSub.ColumnName, scalarSub.Op, new SqlLiteral(value));
+    }
+
+    private BoolLiteralExpression ResolveExists(ExistsExpression exists)
+    {
+        var result = ExecuteSubquery(exists.Subquery);
+        bool hasRows = result.Rows.Count > 0;
+        return new BoolLiteralExpression(exists.Negated ? !hasRows : hasRows);
     }
 
     /// <summary>Executes a subquery SELECT within the current transaction context (no auto-commit).</summary>

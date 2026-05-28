@@ -170,6 +170,7 @@ internal static class SqlTokenizer
             "THEN" => SqlTokenKind.Then,
             "ELSE" => SqlTokenKind.Else,
             "END" => SqlTokenKind.End,
+            "EXISTS" => SqlTokenKind.Exists,
             _ => SqlTokenKind.Identifier
         };
 
@@ -378,4 +379,5 @@ internal enum SqlTokenKind
     Then = 93,
     Else = 94,
     End = 95,
+    Exists = 96,
 }

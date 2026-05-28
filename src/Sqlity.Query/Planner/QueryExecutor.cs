@@ -103,6 +103,8 @@ internal sealed class QueryExecutor
         CaseWhenWhereExpression caseWhen =>
             EvaluateCaseWhenWhere(caseWhen, row, context),
 
+        BoolLiteralExpression boolLit => boolLit.Value,
+
         _ => throw new InvalidOperationException($"Unknown WHERE expression type '{filter.GetType().Name}'.")
     };
 

@@ -61,7 +61,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 - ✅ Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR`
 - ✅ `CASE WHEN cond THEN expr … ELSE expr END` expressions in SELECT and WHERE
-- `EXISTS (SELECT …)` / `NOT EXISTS (SELECT …)` as WHERE atoms
+- ✅ `EXISTS (SELECT …)` / `NOT EXISTS (SELECT …)` as WHERE atoms
 - `UNION` / `UNION ALL` — combine two SELECT results
 - `INTERSECT` / `EXCEPT` — set-difference operations
 - Common Table Expressions: `WITH name AS (SELECT …) [, …] SELECT …` (CTEs materialised as temp tables)
