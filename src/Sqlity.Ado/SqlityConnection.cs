@@ -79,6 +79,11 @@ public sealed class SqlityConnection : DbConnection
 
     internal void ClearActiveTransaction() => _activeTransaction = null;
 
+    /// <summary>
+    /// Returns the names of all user-defined tables in the open database.
+    /// </summary>
+    public IReadOnlyList<string> ListTableNames() => Engine.ListTables();
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)

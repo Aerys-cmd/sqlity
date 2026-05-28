@@ -11,7 +11,7 @@ Sqlity is an educational SQLite-like embedded database engine written in C# for 
 
 ## Current milestone
 
-The repository now contains a storage engine, an executable SQL layer, secondary index support with a rule-based query planner, a complete ADO.NET provider, and full transaction support with crash recovery:
+The repository now contains a storage engine, an executable SQL layer, secondary index support with a rule-based query planner, a complete ADO.NET provider, full transaction support with crash recovery, and an EF Core 10 provider:
 
 - a single-file database format
 - a fixed 4096-byte page model
@@ -40,7 +40,7 @@ The repository now contains a storage engine, an executable SQL layer, secondary
 - aggregate functions: `COUNT(*)`, `COUNT(col)`, `SUM`, `MIN`, `MAX`, `AVG` (returns `double`)
 - `GROUP BY` (single or multi-column) with strict column-validation: every non-aggregate `SELECT` column must appear in `GROUP BY`
 - `HAVING` with a single aggregate comparison (e.g. `HAVING COUNT(*) > 5`)
-- storage, query, CLI, and ADO.NET test coverage
+- storage, query, CLI, ADO.NET, and EF Core test coverage
 
 ## Repository layout
 
@@ -50,7 +50,7 @@ src/
   Sqlity.Storage   File format, catalog persistence, row encoding, pager, and single-page table storage
   Sqlity.Query     MVP SQL parsing, binding, and execution
   Sqlity.Ado       ADO.NET provider (DbConnection, DbCommand, DbDataReader)
-  Sqlity.EFCore    Planned EF Core provider
+  Sqlity.EFCore    EF Core 10 relational provider (`UseSqlity`)
 samples/
   Sqlity.Cli       Tiny console app for opening a `.sqlity` file and executing one SQL statement
 tests/
@@ -94,7 +94,7 @@ Sqlity uses:
 1. Add root-page search and page split behavior for the B-tree path.
 2. ~~Add delete/compaction behavior for table leaf pages.~~ ✅ Done — `DELETE` and `UPDATE` are fully implemented with correct slotted-page compaction.
 3. ~~Expose the engine through an ADO.NET provider.~~ ✅ Done — `SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, and `SqlityParameter` are implemented.
-4. Add an EF Core provider after the ADO.NET provider is stable.
+4. ~~Add an EF Core provider after the ADO.NET provider is stable.~~ ✅ Done — `Sqlity.EFCore` provides a full EF Core 10 relational provider with `UseSqlity`, LINQ query translation, and `EnsureCreated`/`EnsureDeleted`.
 5. Add transactions, then WAL, once the base storage design is solid.
 
 ## Documentation
@@ -103,12 +103,55 @@ Sqlity uses:
 - `docs/storage-engine.md` explains the page model, on-disk layout, and roadmap in detail.
 - `docs/query-engine.md` explains the current SQL surface and its deliberate MVP limits.
 - `docs/ado-provider.md` explains the ADO.NET provider API and how it wraps the query engine.
+- `docs/efcore-provider.md` explains the EF Core provider, type mapping, and limitations.
 - `docs/transactions.md` explains the rollback journal, crash-recovery invariants, and transaction usage.
 - `docs/next-roadmap.md` captures the next concrete milestones.
 
 ## Creating your own database
 
-### Via ADO.NET (recommended)
+### Via EF Core
+
+The EF Core provider is the highest-level API. Configure `UseSqlity` with a file path and use standard EF Core patterns:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Sqlity.EFCore;
+
+public class AppDbContext : DbContext
+{
+    public DbSet<User> Users { get; set; } = null!;
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options)
+        => options.UseSqlity("demo.sqlity");
+
+    protected override void OnModelCreating(ModelBuilder model)
+    {
+        model.Entity<User>(b =>
+        {
+            b.ToTable("Users");
+            b.Property(u => u.Id).HasColumnType("INT64").ValueGeneratedNever();
+            b.Property(u => u.Name).HasColumnType("STRING");
+            b.Property(u => u.Score).HasColumnType("INT64");
+        });
+    }
+}
+
+public class User { public long Id { get; set; } public string Name { get; set; } = ""; public long Score { get; set; } }
+```
+
+```csharp
+using var ctx = new AppDbContext();
+ctx.Database.EnsureCreated();
+
+ctx.Users.Add(new User { Id = 1, Name = "Ada", Score = 42 });
+ctx.SaveChanges();
+
+var top = ctx.Users.Where(u => u.Score > 10).OrderBy(u => u.Name).ToList();
+```
+
+See `docs/efcore-provider.md` for type mapping, limitations, and registered services.
+
+### Via ADO.NET
 
 The ADO.NET provider is the standard way to interact with Sqlity from .NET code. Use
 `SqlityConnection` with a `Data Source=` connection string, then work with the familiar
@@ -191,7 +234,7 @@ Current limits to keep in mind:
 - `ORDER BY` (single or multi-column, `ASC`/`DESC`); a secondary index on the leading sort column triggers an index-ordered scan instead of an in-memory sort
 - `LIMIT` and `OFFSET` for pagination, combinable with `ORDER BY`
 - aggregate functions `COUNT(*)`, `COUNT(col)`, `SUM`, `MIN`, `MAX`, `AVG` with optional `GROUP BY` and `HAVING`
-- no subqueries, `DROP TABLE`, or `ALTER TABLE`
+- no subqueries in projections, window functions, or CTEs
 
 That file path is the database. If `my-db.sqlity` does not exist, Sqlity creates it; if it exists, Sqlity reopens it.
 

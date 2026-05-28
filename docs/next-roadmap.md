@@ -39,9 +39,15 @@ The storage and core query layer is in place: B+ tree with multi-page support, f
 - `DROP TABLE` and `ALTER TABLE` — **done** (`DROP TABLE`, `ALTER TABLE … RENAME TO`, `ALTER TABLE … ADD COLUMN [NOT NULL]`, `ALTER TABLE … RENAME COLUMN … TO`)
 - additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME` — **done**
 
-## 6. EF Core provider
+## 6. EF Core provider ✅
 
-- implement the EF Core provider once the ADO.NET surface is stable
+- implement the EF Core provider once the ADO.NET surface is stable — **done**
+- `UseSqlity(filePath)` extension for `DbContextOptionsBuilder` — **done**
+- type mapping: `string`→`STRING`, `long`/`int`→`INT64`, `bool`→`BOOLEAN`, `double`/`float`/`decimal`→`REAL`, `DateTime`→`DATETIME` — **done**
+- `EnsureCreated` / `EnsureDeleted` schema management — **done**
+- LINQ query translation via relational query pipeline — **done**
+- INSERT / UPDATE / DELETE via `SaveChanges` — **done**
+- `LIMIT`/`OFFSET` pagination instead of SQL Server–style `FETCH NEXT … ROWS ONLY` — **done**
 
 ## 7. Developer workflow ✅
 

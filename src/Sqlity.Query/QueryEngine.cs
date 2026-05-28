@@ -79,6 +79,15 @@ public sealed class QueryEngine : IDisposable
         return last;
     }
 
+    /// <summary>
+    /// Returns the names of all user-defined tables (excludes internal <c>__sqlity_*</c> system tables).
+    /// </summary>
+    public IReadOnlyList<string> ListTables() =>
+        _storage.ListTables()
+            .Where(t => !t.TableName.StartsWith("__sqlity_", StringComparison.OrdinalIgnoreCase))
+            .Select(t => t.TableName)
+            .ToList();
+
     public void Dispose()
     {
         if (_ownsStorage)

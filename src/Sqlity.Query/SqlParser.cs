@@ -156,17 +156,26 @@ internal sealed class SqlParser
             var isPrimaryKey = false;
             var isNotNull = false;
 
-            if (Match(SqlTokenKind.Primary))
+            // Parse any combination of NOT NULL and PRIMARY KEY in any order
+            bool consumed;
+            do
             {
-                Expect(SqlTokenKind.Key);
-                isPrimaryKey = true;
-                isNotNull = true;
+                consumed = false;
+                if (Match(SqlTokenKind.Primary))
+                {
+                    Expect(SqlTokenKind.Key);
+                    isPrimaryKey = true;
+                    isNotNull = true;
+                    consumed = true;
+                }
+                else if (Match(SqlTokenKind.Not))
+                {
+                    Expect(SqlTokenKind.Null);
+                    isNotNull = true;
+                    consumed = true;
+                }
             }
-            else if (Match(SqlTokenKind.Not))
-            {
-                Expect(SqlTokenKind.Null);
-                isNotNull = true;
-            }
+            while (consumed);
 
             columns.Add(new ColumnSpecification(columnName, typeName, isPrimaryKey, isNotNull));
         }
@@ -254,10 +263,18 @@ internal sealed class SqlParser
         Expect(SqlTokenKind.From);
         var tableName = ExpectIdentifier("Expected a table name after FROM.");
 
+        // Collect alias → real-table-name mappings so that EF-style aliases (AS t0) can be resolved.
+        var aliasMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (Match(SqlTokenKind.As))
+        {
+            var alias = ExpectIdentifier("Expected an alias after AS.");
+            aliasMap[alias] = tableName;
+        }
+
         var joins = new List<JoinClause>();
         while (Peek().Kind is SqlTokenKind.Inner or SqlTokenKind.Left or SqlTokenKind.Join)
         {
-            joins.Add(ParseJoinClause());
+            joins.Add(ParseJoinClause(aliasMap));
         }
 
         WhereExpression? filter = null;
@@ -319,7 +336,8 @@ internal sealed class SqlParser
             offset = (int)long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        return new SelectStatement(tableName, columns, filter, joins, groupBy, having, orderBy, limit, offset);
+        var stmt = new SelectStatement(tableName, columns, filter, joins, groupBy, having, orderBy, limit, offset);
+        return aliasMap.Count > 0 ? ResolveAliases(stmt, aliasMap) : stmt;
     }
 
     private SelectItem ParseSelectItem()
@@ -394,7 +412,7 @@ internal sealed class SqlParser
         return new HavingExpression(fn, argument, op, value);
     }
 
-    private JoinClause ParseJoinClause()
+    private JoinClause ParseJoinClause(Dictionary<string, string>? aliasMap = null)
     {
         JoinType joinType;
         if (Match(SqlTokenKind.Inner))
@@ -414,6 +432,13 @@ internal sealed class SqlParser
         }
 
         var joinTableName = ExpectIdentifier("Expected a table name after JOIN.");
+
+        if (aliasMap != null && Match(SqlTokenKind.As))
+        {
+            var alias = ExpectIdentifier("Expected an alias after AS.");
+            aliasMap[alias] = joinTableName;
+        }
+
         Expect(SqlTokenKind.On);
 
         var leftTable = ExpectIdentifier("Expected a table name on the left side of the ON condition.");
@@ -621,6 +646,50 @@ internal sealed class SqlParser
         _position++;
         return token;
     }
+
+    // ── Alias resolution ─────────────────────────────────────────────────────────
+    // EF Core generates aliases like `FROM Users AS u0` and then references `u0.Id`.
+    // After parsing, we walk the AST and replace alias names with real table names so
+    // the existing executor — which resolves column references by table name — works
+    // without any changes.
+
+    private static SelectStatement ResolveAliases(SelectStatement stmt, Dictionary<string, string> aliasMap)
+    {
+        var columns = stmt.Columns?.Select(item => item switch
+        {
+            ColumnSelectItem c => new ColumnSelectItem(ResolveRef(c.Column, aliasMap)),
+            AggregateSelectItem a => new AggregateSelectItem(a.Fn, a.Argument is null ? null : ResolveRef(a.Argument, aliasMap)),
+            _ => item
+        }).ToList<SelectItem>();
+
+        var filter = stmt.Filter is null ? null : ResolveWhereAliases(stmt.Filter, aliasMap);
+
+        var joins = stmt.Joins.Select(j => new JoinClause(j.JoinType, j.TableName, new JoinCondition(
+            ResolveTableAlias(j.Condition.LeftTable, aliasMap), j.Condition.LeftColumn,
+            ResolveTableAlias(j.Condition.RightTable, aliasMap), j.Condition.RightColumn
+        ))).ToList();
+
+        var orderBy = stmt.OrderBy?.Select(t => new OrderByTerm(ResolveRef(t.Column, aliasMap), t.Descending)).ToList();
+
+        return new SelectStatement(stmt.TableName, columns, filter, joins, stmt.GroupBy, stmt.Having, orderBy, stmt.Limit, stmt.Offset);
+    }
+
+    private static ColumnReference ResolveRef(ColumnReference col, Dictionary<string, string> aliasMap) =>
+        col.TableName is null ? col : new ColumnReference(ResolveTableAlias(col.TableName, aliasMap), col.ColumnName);
+
+    private static string ResolveTableAlias(string tableOrAlias, Dictionary<string, string> aliasMap) =>
+        aliasMap.TryGetValue(tableOrAlias, out var realName) ? realName : tableOrAlias;
+
+    private static WhereExpression ResolveWhereAliases(WhereExpression expr, Dictionary<string, string> aliasMap) => expr switch
+    {
+        ComparisonExpression c => c with { TableName = c.TableName is null ? null : ResolveTableAlias(c.TableName, aliasMap) },
+        NullCheckExpression n => n with { TableName = n.TableName is null ? null : ResolveTableAlias(n.TableName, aliasMap) },
+        BinaryLogicalExpression b => new BinaryLogicalExpression(
+            ResolveWhereAliases(b.Left, aliasMap), b.Op, ResolveWhereAliases(b.Right, aliasMap)),
+        InSubqueryExpression i => i with { TableName = i.TableName is null ? null : ResolveTableAlias(i.TableName, aliasMap) },
+        ScalarSubqueryComparisonExpression s => s with { TableName = s.TableName is null ? null : ResolveTableAlias(s.TableName, aliasMap) },
+        _ => expr
+    };
 }
 
 internal abstract record SqlStatement;
