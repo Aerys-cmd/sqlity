@@ -22,12 +22,13 @@ Items are ordered by impact-to-effort ratio within each phase.
 - Additional column types: `REAL` / `FLOAT`, `DATE`, `DATETIME` ✅
 - EF Core 10 provider with `UseSqlity`, LINQ translation, `EnsureCreated` / `EnsureDeleted` ✅
 - CLI with single-statement and stdin-piping modes ✅
+- `LIKE` / `ILIKE`, `BETWEEN` / `NOT BETWEEN`, `NOT IN`, `SELECT DISTINCT`, UPDATE/DELETE without `WHERE`, multi-row `INSERT`, column aliases, `COALESCE` / `NULLIF` / `IFNULL` ✅
 
 ---
 
 ## Phase 1 — SQL completeness (missing basics)
 
-These require only parser and executor changes — no storage impact.
+✅ **Complete.** All items implemented and shipped.
 
 - `LIKE` operator with `%` and `_` wildcards; optional case-insensitive `ILIKE`
 - `BETWEEN x AND y` / `NOT BETWEEN` as syntactic sugar over two comparisons

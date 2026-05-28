@@ -10,11 +10,14 @@ Sqlity now includes a small executable query layer on top of the storage engine.
 - convert SQL literals (including `NULL`) into storage-backed row values
 - execute primary-key lookup, full table iteration, row deletion, and row update
 - evaluate `INNER JOIN` and `LEFT JOIN` with flat column contexts
-- evaluate compound `WHERE` expressions with `AND`/`OR`, all comparison operators, and `IS NULL` / `IS NOT NULL`
+- evaluate compound `WHERE` expressions with `AND`/`OR`, all comparison operators, `IS NULL` / `IS NOT NULL`, `LIKE` / `ILIKE`, `BETWEEN`, and `IN` / `NOT IN`
 - choose between a secondary-index seek, an index-ordered scan, and a full scan based on available indexes and predicate/order-by coverage
 - sort result rows by one or more columns (`ORDER BY`) with an optional index-ordered scan optimisation
 - apply `LIMIT` and `OFFSET` to any result set
 - evaluate aggregate functions (`COUNT`, `SUM`, `MIN`, `MAX`, `AVG`) with optional `GROUP BY` grouping and `HAVING` filtering
+- deduplicate result rows with `SELECT DISTINCT`
+- project result columns under optional aliases (`SELECT col AS alias`)
+- evaluate scalar functions `COALESCE`, `NULLIF`, and `IFNULL` in `SELECT` lists
 
 ## Supported SQL surface
 
@@ -94,6 +97,10 @@ INSERT INTO users VALUES (1, 'Ada', 90, TRUE);
 INSERT INTO users (is_active, name, id) VALUES (FALSE, 'Linus', 2);
 INSERT INTO users (id) VALUES (3);          -- omitted nullable columns default to NULL
 INSERT INTO users VALUES (4, NULL, 95, TRUE); -- explicit NULL literal
+
+-- Multi-row insert
+INSERT INTO users VALUES (5, 'Grace', 88, TRUE), (6, 'Alan', 72, FALSE);
+INSERT INTO users (id, name) VALUES (7, 'Margaret'), (8, 'Edsger');
 ```
 
 Rules:
@@ -103,6 +110,7 @@ Rules:
 - omitting a nullable column in the named-column form inserts `NULL` for that column
 - omitting a `NOT NULL` column in the named-column form throws an error
 - blob literals use hex syntax like `X'CAFE'`
+- multiple value rows can be supplied in a single statement; `RowsAffected` equals the number of rows inserted
 
 ### `SELECT`
 
@@ -111,29 +119,38 @@ Supported shapes:
 ```sql
 SELECT * FROM users;
 SELECT id, name FROM users WHERE id = 2;
+SELECT id AS user_id, name AS full_name FROM users;    -- column aliases
+SELECT DISTINCT cat FROM entries;                       -- deduplicate result rows
 SELECT id, name FROM users ORDER BY name ASC;
 SELECT id, name FROM users ORDER BY name ASC LIMIT 10 OFFSET 20;
-SELECT dept, COUNT(*), SUM(salary) FROM employees GROUP BY dept;
+SELECT dept, COUNT(*) AS cnt, SUM(salary) AS total FROM employees GROUP BY dept;
 SELECT dept, COUNT(*) FROM employees GROUP BY dept HAVING COUNT(*) > 5;
 SELECT users.name, orders.amount FROM users
     INNER JOIN orders ON users.id = orders.user_id
     WHERE orders.amount > 50;
 SELECT users.name, orders.amount FROM users
     LEFT JOIN orders ON users.id = orders.user_id;
+
+-- Scalar functions
+SELECT COALESCE(nickname, name) AS display_name FROM users;
+SELECT NULLIF(score, 0) AS adjusted FROM results;
+SELECT IFNULL(bio, 'No bio') AS bio FROM profiles;
 ```
 
 Rules:
 
-- projections can be `*`, an explicit column list, or aggregate expressions (`COUNT(*)`, `COUNT(col)`, `SUM(col)`, `MIN(col)`, `MAX(col)`, `AVG(col)`)
+- projections can be `*`, an explicit column list, aggregate expressions, or scalar function calls (`COALESCE`, `NULLIF`, `IFNULL`)
+- any projected column or scalar function call can have an `AS alias` suffix; the alias becomes the output column name
+- `SELECT DISTINCT` deduplicates rows after projection and before `LIMIT`/`OFFSET`
 - column references may optionally be table-qualified (`users.name`)
 - `WHERE` supports any column, any comparison operator, and compound `AND`/`OR` expressions (see [WHERE expressions](#where-expressions))
 - when no `WHERE` is given, a full table scan is performed
 - primary-key equality filters use a B+ tree point lookup; equality predicates on secondary-indexed columns trigger an index seek; all other predicates either become a post-filter or fall back to a full scan (see [Query planner](#query-planner))
 - `ORDER BY` accepts one or more columns each with an optional `ASC` (default) or `DESC` direction; if a secondary index exists on the leading sort column the planner emits an `IndexOrderedScan` instead of an in-memory sort
-- `LIMIT n` truncates the result to at most *n* rows; `OFFSET m` skips the first *m* rows; both can be combined and are applied after any `ORDER BY`
+- `LIMIT n` truncates the result to at most *n* rows; `OFFSET m` skips the first *m* rows; both can be combined and are applied after `DISTINCT` and any `ORDER BY`
 - `GROUP BY` accepts one or more column names; every non-aggregate `SELECT` column must appear in `GROUP BY` (strict enforcement, throws otherwise)
 - `HAVING` filters groups after aggregation; the expression must be a single aggregate comparison (e.g. `HAVING SUM(amount) >= 100`); the aggregate function used in `HAVING` need not appear in the `SELECT` list
-- `AVG` always returns a `double`; `COUNT`, `SUM`, `MIN`, and `MAX` over integer columns return `INT64`; aggregate column names in the result are formatted as `Count(*)`, `Sum(amount)`, etc.
+- `AVG` always returns a `double`; `COUNT`, `SUM`, `MIN`, and `MAX` over integer columns return `INT64`; aggregate column names default to `Count(*)`, `Sum(amount)`, etc. but can be overridden with `AS`
 - aggregate queries are not supported in `JOIN` paths
 
 ### `INNER JOIN` / `LEFT JOIN`
@@ -166,11 +183,12 @@ Supported shapes:
 DELETE FROM users WHERE id = 2;
 DELETE FROM users WHERE active = FALSE;
 DELETE FROM users WHERE score < 50 AND active = FALSE;
+DELETE FROM users;                       -- no WHERE: deletes all rows
 ```
 
 Rules:
 
-- `WHERE` is required and supports any column and any comparison operator
+- `WHERE` is optional; omitting it deletes **all rows** in the table
 - all rows that satisfy the condition are deleted; multiple rows may be affected
 - primary-key equality is optimised to a B+ tree point delete; non-PK filters scan all rows
 
@@ -181,11 +199,12 @@ Supported shapes:
 ```sql
 UPDATE users SET name = 'Ada Lovelace', is_active = TRUE WHERE id = 1;
 UPDATE users SET active = TRUE WHERE active = FALSE;
+UPDATE users SET score = 0;              -- no WHERE: updates all rows
 ```
 
 Rules:
 
-- `WHERE` is required and supports any column and any comparison operator
+- `WHERE` is optional; omitting it updates **all rows** in the table
 - all rows that satisfy the condition are updated; multiple rows may be affected
 - updating the primary key column is not allowed
 - all non-assigned columns retain their existing values
@@ -196,11 +215,16 @@ Rules:
 
 - **comparison operators**: `=`, `<>`, `<`, `>`, `<=`, `>=`
 - **null checks**: `IS NULL`, `IS NOT NULL`
+- **pattern matching**: `LIKE 'pattern'`, `NOT LIKE 'pattern'`, `ILIKE 'pattern'` (case-insensitive), `NOT ILIKE 'pattern'`
+  - `%` matches any sequence of characters; `_` matches exactly one character
+- **range check**: `BETWEEN low AND high`, `NOT BETWEEN low AND high` (bounds inclusive)
+- **set membership**: `IN (subquery)`, `NOT IN (subquery)`
 - **logical operators**: `AND`, `OR`
 - **grouping**: parentheses to control evaluation order
 - **column references**: bare names or table-qualified names (`table.column`)
 - blob columns support only `=` and `<>`
 - comparisons involving a `NULL` operand always evaluate to false (three-valued logic)
+- `NOT IN` with a subquery that returns any `NULL` value also evaluates to false (SQL three-valued logic)
 
 Examples:
 
@@ -213,6 +237,12 @@ WHERE score >= 75
 WHERE users.id = 1
 WHERE name IS NULL
 WHERE score IS NOT NULL
+WHERE name LIKE 'A%'
+WHERE name ILIKE 'ada%'
+WHERE code NOT LIKE 'TMP_%'
+WHERE score BETWEEN 50 AND 100
+WHERE score NOT BETWEEN 50 AND 100
+WHERE id NOT IN (SELECT blocked_id FROM blocklist)
 ```
 
 ## Query planner
@@ -249,13 +279,11 @@ SELECT id FROM orders WHERE customer_id = 42 AND status = 'open';
 
 ## Deliberate limitations
 
-- no subqueries (`IN (subquery)`, correlated subqueries, etc.)
-- no `ALTER TABLE`, `DROP TABLE`, or `DROP INDEX`
-- no table constraints beyond the inline primary key and `NOT NULL`
 - range predicates on secondary indexes fall back to a full scan (equality-only planner for now)
 - single active transaction per engine instance; nested transactions are not supported
 - `HAVING` supports only a single aggregate comparison; compound `HAVING` expressions are not yet parsed
 - aggregate queries are not supported in `JOIN` paths
+- scalar functions (`COALESCE`, `NULLIF`, `IFNULL`) are only supported in single-table `SELECT` paths; `JOIN` and aggregation paths will throw
 
 These constraints are intentional. The goal is to keep the implementation close to the underlying page and catalog mechanics without hiding them behind a large abstraction layer.
 
@@ -278,4 +306,4 @@ For more executable CLI examples with captured output, see `samples/Sqlity.Cli/R
 The current runtime limits are:
 
 - `WHERE` on non-primary-key columns performs a full table scan unless a secondary index covers the predicate
-- no subqueries or window functions
+- no window functions or CTEs
