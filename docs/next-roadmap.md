@@ -1,55 +1,104 @@
 # Next roadmap
 
-The storage and core query layer is in place: B+ tree with multi-page support, full CRUD, compound `WHERE`, and `JOIN`. The next steps close correctness gaps, widen the SQL surface, and wire up the public provider APIs.
+The foundation is solid: B+ tree storage, full CRUD, compound `WHERE`, `JOIN`, secondary indexes
+with a rule-based query planner, rollback-journal transactions, crash recovery, a complete ADO.NET
+provider, and an EF Core 10 provider. All previous milestones are done.
 
-## 1. ADO.NET provider ✅
+The next steps widen the SQL surface, harden the storage engine, and improve developer experience.
+Items are ordered by impact-to-effort ratio within each phase.
 
-- expose `DbConnection`, `DbCommand`, and `DbDataReader` — **done**
-- adapt the existing `QueryEngine` result model instead of duplicating execution logic — **done**
-- surface table metadata and column ordinals through provider-friendly APIs — **done**
+---
 
-## 2. Correctness gaps ✅
+## Completed milestones
 
-- `NULL` support — nullable columns, `NULL` literals, `NOT NULL` constraints, `IS NULL` / `IS NOT NULL` expressions — **done**
-- page recycling — emptied B+ tree leaf pages are now released back to the free-list via `ReleasePage` — **done**
+- ADO.NET provider (`SqlityConnection`, `SqlityCommand`, `SqlityDataReader`, `SqlityParameter`) ✅
+- `NULL` support and page recycling ✅
+- Transactions: `BEGIN` / `COMMIT` / `ROLLBACK`, rollback journal, crash recovery, auto-commit ✅
+- Secondary indexes and rule-based query planner (index seek, ordered index scan) ✅
+- `ORDER BY` (multi-column, index-aware), `LIMIT` / `OFFSET` ✅
+- Aggregate functions: `COUNT`, `SUM`, `MIN`, `MAX`, `AVG`; `GROUP BY` / `HAVING` ✅
+- Scalar subqueries and `IN (subquery)` ✅
+- `DROP TABLE` and full `ALTER TABLE` suite ✅
+- Additional column types: `REAL` / `FLOAT`, `DATE`, `DATETIME` ✅
+- EF Core 10 provider with `UseSqlity`, LINQ translation, `EnsureCreated` / `EnsureDeleted` ✅
+- CLI with single-statement and stdin-piping modes ✅
 
-## 3. Transactions and durability ✅
+---
 
-- `BEGIN` / `BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK` transaction boundaries — **done**
-- rollback journal (page-level journaling before each write; journal deleted on commit) — **done**
-- crash recovery: stale journal on reopen triggers automatic rollback — **done**
-- `SqlityTransaction.Commit()` and `Rollback()` wired to real storage operations — **done**
-- auto-commit for statements executed outside an explicit `BEGIN` — **done**
-- multi-statement batch execution in a single `Execute` / `ExecuteNonQuery` call — **done**
+## Phase 1 — SQL completeness (missing basics)
 
-## 4. Secondary indexes and query planning ✅
+These require only parser and executor changes — no storage impact.
 
-- parse and store `CREATE [UNIQUE] INDEX` in a dedicated index catalog — **done**
-- build a secondary B+ tree per index with sort-preserving key encoding — **done**
-- automatic index maintenance on `INSERT`, `DELETE`, and `UPDATE` — **done**
-- rule-based logical/physical query planner: equality predicates on leading index columns produce an index seek; unmatched predicates become a post-filter — **done**
+- `LIKE` operator with `%` and `_` wildcards; optional case-insensitive `ILIKE`
+- `BETWEEN x AND y` / `NOT BETWEEN` as syntactic sugar over two comparisons
+- `DISTINCT` keyword in `SELECT` — deduplicate result rows after projection
+- `NOT IN (values | subquery)` — complement of the existing `IN` implementation
+- UPDATE and DELETE without a `WHERE` clause — affect all rows (currently the parser requires `WHERE`)
+- Multi-row `INSERT`: `VALUES (…), (…), …`
+- Column aliases: `SELECT col AS alias` — carry alias through to result column names
+- `COALESCE(a, b, …)`, `NULLIF(a, b)`, `IFNULL(a, b)` scalar functions
 
-## 5. Wider SQL surface ✅
+---
 
-- `ORDER BY` (with `ASC` / `DESC`), multi-column, index-aware optimization — **done**
-- `LIMIT` / `OFFSET` — **done**
-- aggregate functions: `COUNT`, `SUM`, `MIN`, `MAX`, `AVG` — **done**
-- `GROUP BY` / `HAVING` — **done**
-- scalar subqueries and `IN (subquery)` — **done**
-- `DROP TABLE` and `ALTER TABLE` — **done** (`DROP TABLE`, `ALTER TABLE … RENAME TO`, `ALTER TABLE … ADD COLUMN [NOT NULL]`, `ALTER TABLE … RENAME COLUMN … TO`)
-- additional types: `REAL` / `FLOAT`, `DATE`, `DATETIME` — **done**
+## Phase 2 — DDL completeness
 
-## 6. EF Core provider ✅
+- `DEFAULT expr` in `CREATE TABLE` — parsed, stored in catalog, applied on INSERT when column omitted
+- `AUTOINCREMENT` / `SERIAL` for `INT64` primary keys — track max key in catalog, auto-assign
+- Inline `UNIQUE` constraint in `CREATE TABLE` — create an implicit unique index automatically
+- `INSERT OR REPLACE` (upsert) — detect primary-key conflict and overwrite instead of erroring
+- `INSERT INTO t SELECT …` — pipe a query result directly into an insert loop
+- `CREATE VIEW name AS SELECT …` — store view definition in catalog, materialise on query
+- `TRUNCATE TABLE` — delete all rows and release all pages back to the free list
 
-- implement the EF Core provider once the ADO.NET surface is stable — **done**
-- `UseSqlity(filePath)` extension for `DbContextOptionsBuilder` — **done**
-- type mapping: `string`→`STRING`, `long`/`int`→`INT64`, `bool`→`BOOLEAN`, `double`/`float`/`decimal`→`REAL`, `DateTime`→`DATETIME` — **done**
-- `EnsureCreated` / `EnsureDeleted` schema management — **done**
-- LINQ query translation via relational query pipeline — **done**
-- INSERT / UPDATE / DELETE via `SaveChanges` — **done**
-- `LIMIT`/`OFFSET` pagination instead of SQL Server–style `FETCH NEXT … ROWS ONLY` — **done**
+---
 
-## 7. Developer workflow ✅
+## Phase 3 — Advanced SQL
 
-- add a tiny CLI that accepts SQL text and prints result rows — **done**
-- document the minimal `QueryEngine(filePath)` path for creating or reopening a `.sqlity` file — **done**
+- Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR`
+- `CASE WHEN cond THEN expr … ELSE expr END` expressions in SELECT and WHERE
+- `EXISTS (SELECT …)` / `NOT EXISTS (SELECT …)` as WHERE atoms
+- `UNION` / `UNION ALL` — combine two SELECT results
+- `INTERSECT` / `EXCEPT` — set-difference operations
+- Common Table Expressions: `WITH name AS (SELECT …) [, …] SELECT …` (CTEs materialised as temp tables)
+- `SAVEPOINT name` / `RELEASE name` / `ROLLBACK TO name` — nested transaction savepoints
+- Window functions: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LAG()`, `LEAD()` with `OVER (PARTITION BY … ORDER BY …)`
+
+---
+
+## Phase 4 — Storage engine hardening
+
+Each item here teaches a concrete internals concept:
+
+- **Buffer pool with LRU eviction** — wrap `IPager` with a fixed-capacity in-memory page cache;
+  dirty pages flushed on eviction or commit; demonstrates the buffer-pool design used by every
+  real database
+- **Overflow pages for large rows** — detect rows exceeding page capacity, chain overflow pages,
+  update B-tree insert / read / delete paths; lifts the current hard per-row size limit
+- **Write-Ahead Logging (WAL)** — implement WAL as an alternative to the rollback journal;
+  readers see a consistent snapshot while a writer appends; demonstrates why SQLite and PostgreSQL
+  converge on WAL for concurrent workloads
+- **In-memory mode** — detect `":memory:"` as the file path and substitute `InMemoryPager`
+  (already used in benchmarks) so no file I/O occurs; useful for tests and embedded scenarios
+- **Cost-based query planner** — collect per-table row counts and per-column distinct-value
+  estimates; replace the current rule-based index selection with cardinality-driven cost estimates;
+  demonstrates how statistics drive real query optimisers
+
+---
+
+## Phase 5 — Provider and developer experience
+
+- **Async ADO.NET** — implement `OpenAsync`, `ExecuteReaderAsync`, `ExecuteNonQueryAsync`,
+  `ExecuteScalarAsync` on all provider types; required for async EF Core paths
+- **`GetSchemaTable`** in `SqlityDataReader` — return column metadata (name, type, ordinal,
+  nullable) so schema-aware consumers work out of the box
+- **`EXPLAIN QUERY PLAN`** statement — parse `EXPLAIN QUERY PLAN SELECT …` and return plan
+  description rows (scan vs seek, index used, estimated rows) instead of data rows
+- **Error messages with source position** — track line and column in `SqlTokenizer`; include
+  position in all parse and bind errors so diagnostics are actionable
+- **Interactive CLI REPL** — when no SQL argument is provided, start a read-eval-print loop
+  accepting multi-line input terminated by `;`, with `\q` to exit; makes the CLI useful for
+  exploratory queries
+- **NuGet packaging** — add `<PackageId>`, `<Version>`, and `<Description>` to `Sqlity.Ado`
+  and `Sqlity.EFCore`; set up a GitHub Actions publish workflow
+- **EF Core migrations** — implement `IMigrationsSqlGenerator` and related services so
+  `dotnet-ef migrations add` and `dotnet-ef database update` work against Sqlity
