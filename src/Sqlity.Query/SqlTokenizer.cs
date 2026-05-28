@@ -165,6 +165,11 @@ internal static class SqlTokenizer
             "ROUND" => SqlTokenKind.Round,
             "CEIL" => SqlTokenKind.Ceil,
             "FLOOR" => SqlTokenKind.Floor,
+            "CASE" => SqlTokenKind.Case,
+            "WHEN" => SqlTokenKind.When,
+            "THEN" => SqlTokenKind.Then,
+            "ELSE" => SqlTokenKind.Else,
+            "END" => SqlTokenKind.End,
             _ => SqlTokenKind.Identifier
         };
 
@@ -368,4 +373,9 @@ internal enum SqlTokenKind
     Round = 88,
     Ceil = 89,
     Floor = 90,
+    Case = 91,
+    When = 92,
+    Then = 93,
+    Else = 94,
+    End = 95,
 }

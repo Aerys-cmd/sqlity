@@ -100,6 +100,9 @@ internal sealed class QueryExecutor
         BetweenExpression between =>
             EvaluateBetween(row[ResolveColumn(between.TableName, between.ColumnName, context)], between.Low.Value, between.High.Value, between.Negated),
 
+        CaseWhenWhereExpression caseWhen =>
+            EvaluateCaseWhenWhere(caseWhen, row, context),
+
         _ => throw new InvalidOperationException($"Unknown WHERE expression type '{filter.GetType().Name}'.")
     };
 
@@ -284,4 +287,46 @@ internal sealed class QueryExecutor
 
         return negated ? !result : result;
     }
+
+    private static bool EvaluateCaseWhenWhere(
+        CaseWhenWhereExpression expr,
+        object?[] row,
+        IReadOnlyList<(TableInfo Table, int Offset)> context)
+    {
+        object? result = null;
+        var matched = false;
+
+        foreach (var branch in expr.Branches)
+        {
+            if (Evaluate(branch.Condition, row, context))
+            {
+                result = ResolveScalarExpr(branch.Result, row, context);
+                matched = true;
+                break;
+            }
+        }
+
+        if (!matched)
+        {
+            if (expr.ElseResult is null)
+                return false; // NULL never satisfies a comparison
+
+            result = ResolveScalarExpr(expr.ElseResult, row, context);
+        }
+
+        if (result is null)
+            return false;
+
+        return EvaluateComparison(result, expr.Op, expr.Value.Value);
+    }
+
+    internal static object? ResolveScalarExpr(
+        ScalarExpr expr,
+        object?[] row,
+        IReadOnlyList<(TableInfo Table, int Offset)> context) => expr switch
+    {
+        LiteralScalarExpr lit => lit.Value.Value,
+        ColumnScalarExpr col => row[ResolveColumn(col.Column.TableName, col.Column.ColumnName, context)],
+        _ => throw new InvalidOperationException($"Unknown scalar expression type '{expr.GetType().Name}'.")
+    };
 }

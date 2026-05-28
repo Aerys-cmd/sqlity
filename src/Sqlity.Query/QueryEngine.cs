@@ -740,6 +740,15 @@ public sealed class QueryEngine : IDisposable
                     types.Add(ColumnType.String); // scalar function returns vary; use String as default
                     break;
                 }
+                case CaseWhenSelectItem caseItem:
+                {
+                    var context = new[] { (Table: table, Offset: 0) };
+                    Func<object?[], object?> projector = row => EvaluateCaseWhen(caseItem.Branches, caseItem.ElseResult, row, context);
+                    projectors.Add(projector);
+                    names.Add(caseItem.Alias ?? "CASE");
+                    types.Add(ColumnType.String);
+                    break;
+                }
                 default:
                     throw new InvalidOperationException("Aggregate functions are not allowed outside a GROUP BY context.");
             }
@@ -748,8 +757,22 @@ public sealed class QueryEngine : IDisposable
         return (projectors.ToArray(), names.ToArray(), types.ToArray());
     }
 
-    private static object? EvaluateScalarFunction(ScalarFn fn, IReadOnlyList<ScalarExpr> args, TableInfo table, object?[] row)
+    private static object? EvaluateCaseWhen(
+        IReadOnlyList<CaseWhenBranch> branches,
+        ScalarExpr? elseResult,
+        object?[] row,
+        IReadOnlyList<(TableInfo Table, int Offset)> context)
     {
+        foreach (var branch in branches)
+        {
+            if (QueryExecutor.Evaluate(branch.Condition, row, context))
+                return QueryExecutor.ResolveScalarExpr(branch.Result, row, context);
+        }
+
+        return elseResult is null ? null : QueryExecutor.ResolveScalarExpr(elseResult, row, context);
+    }
+
+    private static object? EvaluateScalarFunction(ScalarFn fn, IReadOnlyList<ScalarExpr> args, TableInfo table, object?[] row)    {
         object?[] resolved = args.Select(arg => arg switch
         {
             ColumnScalarExpr ce => row[table.Schema.GetColumnOrdinal(ce.Column.ColumnName)],

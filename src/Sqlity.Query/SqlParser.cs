@@ -435,6 +435,8 @@ internal sealed class SqlParser
 
         if (kind is SqlTokenKind.Count or SqlTokenKind.Sum or SqlTokenKind.Min or SqlTokenKind.Max or SqlTokenKind.Avg)
             item = ParseAggregateSelectItem();
+        else if (kind == SqlTokenKind.Case)
+            item = ParseCaseWhenSelectItem();
         else if (kind is SqlTokenKind.Coalesce or SqlTokenKind.Nullif or SqlTokenKind.Ifnull
                       or SqlTokenKind.Upper or SqlTokenKind.Lower or SqlTokenKind.Trim
                       or SqlTokenKind.Length or SqlTokenKind.Substr
@@ -453,6 +455,7 @@ internal sealed class SqlParser
                 ColumnSelectItem col => col with { Alias = alias },
                 AggregateSelectItem agg => agg with { Alias = alias },
                 ScalarFunctionSelectItem fn => fn with { Alias = alias },
+                CaseWhenSelectItem cw => cw with { Alias = alias },
                 _ => item
             };
         }
@@ -650,6 +653,46 @@ internal sealed class SqlParser
 
         return new DeleteStatement(tableName, filter);
     }
+
+    private CaseWhenSelectItem ParseCaseWhenSelectItem()
+    {
+        var (branches, elseResult) = ParseCaseWhenBranches();
+        return new CaseWhenSelectItem(branches, elseResult);
+    }
+
+    private WhereExpression ParseCaseWhenWhereAtom()
+    {
+        var (branches, elseResult) = ParseCaseWhenBranches();
+        var op = ParseComparisonOp();
+        var value = ParseLiteral();
+        return new CaseWhenWhereExpression(branches, elseResult, op, value);
+    }
+
+    private (IReadOnlyList<CaseWhenBranch> Branches, ScalarExpr? ElseResult) ParseCaseWhenBranches()
+    {
+        Expect(SqlTokenKind.Case);
+
+        var branches = new List<CaseWhenBranch>();
+        while (Peek().Kind == SqlTokenKind.When)
+        {
+            Advance(); // consume WHEN
+            var condition = ParseWhereExpression();
+            Expect(SqlTokenKind.Then);
+            var result = ParseScalarExpr();
+            branches.Add(new CaseWhenBranch(condition, result));
+        }
+
+        if (branches.Count == 0)
+            throw new InvalidOperationException("CASE expression requires at least one WHEN branch.");
+
+        ScalarExpr? elseResult = null;
+        if (Match(SqlTokenKind.Else))
+            elseResult = ParseScalarExpr();
+
+        Expect(SqlTokenKind.End);
+        return (branches, elseResult);
+    }
+
     private WhereExpression ParseWhereExpression() => ParseOrExpression();
 
     private WhereExpression ParseOrExpression()
@@ -682,6 +725,9 @@ internal sealed class SqlParser
             Expect(SqlTokenKind.CloseParen);
             return inner;
         }
+
+        if (Peek().Kind == SqlTokenKind.Case)
+            return ParseCaseWhenWhereAtom();
 
         string? tableName = null;
         var columnName = ExpectIdentifier("Expected a column name in the WHERE condition.");
@@ -856,6 +902,10 @@ internal sealed class SqlParser
                     _ => arg
                 }).ToList()
             },
+            CaseWhenSelectItem cw => cw with
+            {
+                Branches = cw.Branches.Select(b => b with { Condition = ResolveWhereAliases(b.Condition, aliasMap) }).ToList()
+            },
             _ => item
         }).ToList<SelectItem>();
 
@@ -887,6 +937,10 @@ internal sealed class SqlParser
         ScalarSubqueryComparisonExpression s => s with { TableName = s.TableName is null ? null : ResolveTableAlias(s.TableName, aliasMap) },
         LikeExpression l => l with { TableName = l.TableName is null ? null : ResolveTableAlias(l.TableName, aliasMap) },
         BetweenExpression be => be with { TableName = be.TableName is null ? null : ResolveTableAlias(be.TableName, aliasMap) },
+        CaseWhenWhereExpression cw => cw with
+        {
+            Branches = cw.Branches.Select(b => b with { Condition = ResolveWhereAliases(b.Condition, aliasMap) }).ToList()
+        },
         _ => expr
     };
 }
@@ -978,6 +1032,15 @@ internal sealed record ColumnScalarExpr(ColumnReference Column) : ScalarExpr;
 internal sealed record LiteralScalarExpr(SqlLiteral Value) : ScalarExpr;
 
 internal sealed record ScalarFunctionSelectItem(ScalarFn Fn, IReadOnlyList<ScalarExpr> Args, string? Alias = null) : SelectItem;
+
+// ── CASE WHEN ─────────────────────────────────────────────────────────────────
+
+internal sealed record CaseWhenBranch(WhereExpression Condition, ScalarExpr Result);
+
+internal sealed record CaseWhenSelectItem(IReadOnlyList<CaseWhenBranch> Branches, ScalarExpr? ElseResult, string? Alias = null) : SelectItem;
+
+/// <summary>CASE WHEN … END op literal — used in WHERE clauses.</summary>
+internal sealed record CaseWhenWhereExpression(IReadOnlyList<CaseWhenBranch> Branches, ScalarExpr? ElseResult, ComparisonOp Op, SqlLiteral Value) : WhereExpression;
 
 // ── ORDER BY ─────────────────────────────────────────────────────────────────
 
