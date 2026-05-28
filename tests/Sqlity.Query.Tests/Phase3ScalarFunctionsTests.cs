@@ -31,7 +31,7 @@ public sealed class Phase3ScalarFunctionsTests
 
             var result = engine.Execute("SELECT UPPER(name) FROM t WHERE id = 1");
 
-            Assert.Equal(1, result.Rows.Count);
+            Assert.Single(result.Rows);
             Assert.Equal("HELLO", result.Rows[0][0]);
         }
         finally { Cleanup(engine, path); }
@@ -48,7 +48,7 @@ public sealed class Phase3ScalarFunctionsTests
 
             var result = engine.Execute("SELECT UPPER(name) FROM t WHERE id = 1");
 
-            Assert.Equal(1, result.Rows.Count);
+            Assert.Single(result.Rows);
             Assert.Null(result.Rows[0][0]);
         }
         finally { Cleanup(engine, path); }
