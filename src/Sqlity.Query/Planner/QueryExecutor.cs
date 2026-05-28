@@ -92,7 +92,13 @@ internal sealed class QueryExecutor
             EvaluateNullCheck(row[ResolveColumn(nullCheck.TableName, nullCheck.ColumnName, context)], nullCheck.ExpectNull),
 
         InValuesExpression inValues =>
-            EvaluateInValues(row[ResolveColumn(inValues.TableName, inValues.ColumnName, context)], inValues.Values),
+            EvaluateInValues(row[ResolveColumn(inValues.TableName, inValues.ColumnName, context)], inValues.Values, inValues.Negated),
+
+        LikeExpression like =>
+            EvaluateLike(row[ResolveColumn(like.TableName, like.ColumnName, context)], like.Pattern, like.CaseInsensitive, like.Negated),
+
+        BetweenExpression between =>
+            EvaluateBetween(row[ResolveColumn(between.TableName, between.ColumnName, context)], between.Low.Value, between.High.Value, between.Negated),
 
         _ => throw new InvalidOperationException($"Unknown WHERE expression type '{filter.GetType().Name}'.")
     };
@@ -100,20 +106,20 @@ internal sealed class QueryExecutor
     internal static bool EvaluateNullCheck(object? columnValue, bool expectNull) =>
         expectNull ? columnValue is null : columnValue is not null;
 
-    internal static bool EvaluateInValues(object? columnValue, IReadOnlyList<object?> values)
+    internal static bool EvaluateInValues(object? columnValue, IReadOnlyList<object?> values, bool negated = false)
     {
         if (columnValue is null)
             return false;
 
+        bool hasNull = false;
         foreach (var v in values)
         {
-            if (v is null)
-                continue;
+            if (v is null) { hasNull = true; continue; }
 
             try
             {
                 if (EvaluateComparison(columnValue, ComparisonOp.Equals, v))
-                    return true;
+                    return !negated;
             }
             catch (InvalidOperationException)
             {
@@ -121,7 +127,11 @@ internal sealed class QueryExecutor
             }
         }
 
-        return false;
+        // No match found. For NOT IN: if there's any NULL in the list, SQL says UNKNOWN → return false.
+        if (negated && hasNull)
+            return false;
+
+        return negated;
     }
 
     internal static int ResolveColumn(
@@ -211,5 +221,67 @@ internal sealed class QueryExecutor
         if (columnValue is DateTime && literalValue is string dtString)
             return DateTime.Parse(dtString, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind);
         return literalValue;
+    }
+
+    internal static bool EvaluateLike(object? columnValue, string pattern, bool caseInsensitive, bool negated)
+    {
+        if (columnValue is null)
+            return false;
+
+        var text = columnValue.ToString() ?? string.Empty;
+        var cmp = caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var result = MatchesLikeCore(text, 0, pattern, 0, cmp);
+        return negated ? !result : result;
+    }
+
+    private static bool MatchesLikeCore(string value, int vi, string pattern, int pi, StringComparison cmp)
+    {
+        while (true)
+        {
+            if (pi == pattern.Length)
+                return vi == value.Length;
+
+            char pc = pattern[pi];
+            if (pc == '%')
+            {
+                pi++;
+                for (int i = vi; i <= value.Length; i++)
+                    if (MatchesLikeCore(value, i, pattern, pi, cmp))
+                        return true;
+                return false;
+            }
+            else if (pc == '_')
+            {
+                if (vi >= value.Length) return false;
+                vi++;
+                pi++;
+            }
+            else
+            {
+                if (vi >= value.Length) return false;
+                if (string.Compare(value, vi, pattern, pi, 1, cmp) != 0) return false;
+                vi++;
+                pi++;
+            }
+        }
+    }
+
+    internal static bool EvaluateBetween(object? columnValue, object? low, object? high, bool negated)
+    {
+        if (columnValue is null || low is null || high is null)
+            return false;
+
+        bool result;
+        try
+        {
+            result = EvaluateComparison(columnValue, ComparisonOp.GreaterThanOrEquals, low)
+                  && EvaluateComparison(columnValue, ComparisonOp.LessThanOrEquals, high);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+
+        return negated ? !result : result;
     }
 }

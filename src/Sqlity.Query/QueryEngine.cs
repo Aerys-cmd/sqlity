@@ -231,9 +231,14 @@ public sealed class QueryEngine : IDisposable
     private QueryExecutionResult ExecuteInsert(InsertStatement statement)
     {
         var table = _storage.GetTable(statement.TableName);
-        var values = BindInsertValues(table, statement);
-        _storage.Insert(table.TableName, values);
-        return QueryExecutionResult.Empty(rowsAffected: 1);
+        int rowsAffected = 0;
+        foreach (var valueRow in statement.ValueRows)
+        {
+            var values = BindInsertValues(table, statement.Columns, valueRow);
+            _storage.Insert(table.TableName, values);
+            rowsAffected++;
+        }
+        return QueryExecutionResult.Empty(rowsAffected: rowsAffected);
     }
 
     private QueryExecutionResult ExecuteSelect(SelectStatement statement)
@@ -266,14 +271,17 @@ public sealed class QueryEngine : IDisposable
                     new[] { (Table: fromTable, Offset: 0) });
             }
 
-            rowSeq = ApplyLimitOffset(rowSeq, statement.Limit, statement.Offset);
-
-            var (selectedOrdinals, projectedColumns, projectedColumnTypes) =
+            var (projectors, projectedColumns, projectedColumnTypes) =
                 BindSingleTableSelectItems(fromTable, statement.Columns);
 
             var projectedRows = rowSeq
-                .Select(row => selectedOrdinals.Select(i => row[i]).ToArray())
+                .Select(row => projectors.Select(p => p(row)).ToArray())
                 .ToArray();
+
+            if (statement.IsDistinct)
+                projectedRows = ApplyDistinct(projectedRows);
+
+            projectedRows = ApplyLimitOffset(projectedRows, statement.Limit, statement.Offset).ToArray();
 
             return QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
         }
@@ -353,11 +361,19 @@ public sealed class QueryEngine : IDisposable
     {
         var table = _storage.GetTable(statement.TableName);
 
+        if (statement.Filter is null)
+        {
+            var allRows = _storage.ReadAll(table.TableName).ToArray();
+            foreach (var row in allRows)
+                _storage.Delete(table.TableName, (long)row[table.Schema.PrimaryKeyOrdinal]!);
+            return QueryExecutionResult.Empty(rowsAffected: allRows.Length);
+        }
+
         var resolvedFilter = ResolveSubqueries(statement.Filter)!;
         if (!ReferenceEquals(resolvedFilter, statement.Filter))
             statement = statement with { Filter = resolvedFilter };
 
-        if (TryExtractPrimaryKeyEquality(table, statement.Filter, out var pkValue))
+        if (TryExtractPrimaryKeyEquality(table, statement.Filter!, out var pkValue))
         {
             _storage.Delete(table.TableName, pkValue);
             return QueryExecutionResult.Empty(rowsAffected: 1);
@@ -365,7 +381,7 @@ public sealed class QueryEngine : IDisposable
 
         var context = new[] { (Table: table, Offset: 0) };
         var matchingRows = _storage.ReadAll(table.TableName)
-            .Where(row => QueryExecutor.Evaluate(statement.Filter, row, context))
+            .Where(row => QueryExecutor.Evaluate(statement.Filter!, row, context))
             .ToArray();
 
         foreach (var row in matchingRows)
@@ -380,11 +396,23 @@ public sealed class QueryEngine : IDisposable
     {
         var table = _storage.GetTable(statement.TableName);
 
+        if (statement.Filter is null)
+        {
+            var allRows = _storage.ReadAll(table.TableName).ToArray();
+            foreach (var row in allRows)
+            {
+                var pk = (long)row[table.Schema.PrimaryKeyOrdinal]!;
+                var updated = ApplyAssignments(table, row, statement.Assignments);
+                _storage.Update(table.TableName, pk, updated);
+            }
+            return QueryExecutionResult.Empty(rowsAffected: allRows.Length);
+        }
+
         var resolvedFilter = ResolveSubqueries(statement.Filter)!;
         if (!ReferenceEquals(resolvedFilter, statement.Filter))
             statement = statement with { Filter = resolvedFilter };
 
-        if (TryExtractPrimaryKeyEquality(table, statement.Filter, out var pkValue))
+        if (TryExtractPrimaryKeyEquality(table, statement.Filter!, out var pkValue))
         {
             if (!_storage.TryReadByPrimaryKey(table.TableName, pkValue, out var existingValues) || existingValues is null)
             {
@@ -396,9 +424,9 @@ public sealed class QueryEngine : IDisposable
             return QueryExecutionResult.Empty(rowsAffected: 1);
         }
 
-        var context = new[] { (Table: table, Offset: 0) };
+        var context2 = new[] { (Table: table, Offset: 0) };
         var matchingRows = _storage.ReadAll(table.TableName)
-            .Where(row => QueryExecutor.Evaluate(statement.Filter, row, context))
+            .Where(row => QueryExecutor.Evaluate(statement.Filter!, row, context2))
             .ToArray();
 
         foreach (var row in matchingRows)
@@ -428,21 +456,21 @@ public sealed class QueryEngine : IDisposable
         return newValues;
     }
 
-    private object?[] BindInsertValues(TableInfo table, InsertStatement statement)
+    private object?[] BindInsertValues(TableInfo table, IReadOnlyList<string>? columns, IReadOnlyList<SqlLiteral> values)
     {
-        if (statement.Columns is null)
+        if (columns is null)
         {
-            if (statement.Values.Count != table.Schema.Columns.Count)
+            if (values.Count != table.Schema.Columns.Count)
             {
                 throw new InvalidOperationException($"INSERT INTO '{table.TableName}' requires {table.Schema.Columns.Count} values.");
             }
 
-            return statement.Values
+            return values
                 .Select((literal, index) => ConvertLiteral(table.Schema.Columns[index], literal))
                 .ToArray();
         }
 
-        if (statement.Columns.Count != statement.Values.Count)
+        if (columns.Count != values.Count)
         {
             throw new InvalidOperationException("INSERT column and value counts must match.");
         }
@@ -450,16 +478,16 @@ public sealed class QueryEngine : IDisposable
         var boundValues = new object?[table.Schema.Columns.Count];
         var assignedColumns = new bool[table.Schema.Columns.Count];
 
-        for (var index = 0; index < statement.Columns.Count; index++)
+        for (var index = 0; index < columns.Count; index++)
         {
-            var columnName = statement.Columns[index];
+            var columnName = columns[index];
             var ordinal = table.Schema.GetColumnOrdinal(columnName);
             if (assignedColumns[ordinal])
             {
                 throw new InvalidOperationException($"Column '{columnName}' is specified more than once in the INSERT statement.");
             }
 
-            boundValues[ordinal] = ConvertLiteral(table.Schema.Columns[ordinal], statement.Values[index]);
+            boundValues[ordinal] = ConvertLiteral(table.Schema.Columns[ordinal], values[index]);
             assignedColumns[ordinal] = true;
         }
 
@@ -503,7 +531,7 @@ public sealed class QueryEngine : IDisposable
     {
         var result = ExecuteSubquery(inSub.Subquery);
         var values = result.Rows.Select(row => row.Length > 0 ? row[0] : null).ToList();
-        return new InValuesExpression(inSub.TableName, inSub.ColumnName, values);
+        return new InValuesExpression(inSub.TableName, inSub.ColumnName, values, inSub.Negated);
     }
 
     private ComparisonExpression ResolveScalarSubquery(ScalarSubqueryComparisonExpression scalarSub)
@@ -530,48 +558,95 @@ public sealed class QueryEngine : IDisposable
     }
 
     /// <summary>
-    /// Resolves the column ordinals, names, and types for a single-table SELECT.
-    /// Handles both plain column references and aggregate items (aggregate columns are NOT included here;
-    /// they are handled separately by the aggregation path).
+    /// Resolves the column projectors, names, and types for a single-table SELECT.
+    /// Handles plain column references, scalar functions, and column aliases.
+    /// Aggregate items are handled separately by the aggregation path.
     /// </summary>
-    private static (int[] Ordinals, string[] Names, ColumnType[] Types) BindSingleTableSelectItems(
+    private static (Func<object?[], object?>[] Projectors, string[] Names, ColumnType[] Types) BindSingleTableSelectItems(
         TableInfo table,
         IReadOnlyList<SelectItem>? items)
     {
         if (items is null)
         {
-            var allOrdinals = Enumerable.Range(0, table.Schema.Columns.Count).ToArray();
-            var allNames = allOrdinals.Select(i => table.Schema.Columns[i].Name).ToArray();
-            var allTypes = allOrdinals.Select(i => table.Schema.Columns[i].Type).ToArray();
-            return (allOrdinals, allNames, allTypes);
+            var allProjectors = Enumerable.Range(0, table.Schema.Columns.Count)
+                .Select<int, Func<object?[], object?>>(i => row => row[i])
+                .ToArray();
+            var allNames = Enumerable.Range(0, table.Schema.Columns.Count)
+                .Select(i => table.Schema.Columns[i].Name).ToArray();
+            var allTypes = Enumerable.Range(0, table.Schema.Columns.Count)
+                .Select(i => table.Schema.Columns[i].Type).ToArray();
+            return (allProjectors, allNames, allTypes);
         }
 
         if (items.Count == 0)
             throw new InvalidOperationException("SELECT requires at least one projected column.");
 
-        var ordinals = new List<int>();
+        var projectors = new List<Func<object?[], object?>>();
         var names = new List<string>();
         var types = new List<ColumnType>();
 
         foreach (var item in items)
         {
-            if (item is not ColumnSelectItem colItem)
-                throw new InvalidOperationException("Aggregate functions are not allowed outside a GROUP BY context.");
-
-            var col = colItem.Column;
-            if (col.TableName is not null &&
-                !string.Equals(col.TableName, table.TableName, StringComparison.OrdinalIgnoreCase))
+            switch (item)
             {
-                throw new InvalidOperationException($"Table '{col.TableName}' not found in the FROM clause.");
-            }
+                case ColumnSelectItem colItem:
+                {
+                    var col = colItem.Column;
+                    if (col.TableName is not null &&
+                        !string.Equals(col.TableName, table.TableName, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException($"Table '{col.TableName}' not found in the FROM clause.");
 
-            var ordinal = table.Schema.GetColumnOrdinal(col.ColumnName);
-            ordinals.Add(ordinal);
-            names.Add(col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName);
-            types.Add(table.Schema.Columns[ordinal].Type);
+                    var ordinal = table.Schema.GetColumnOrdinal(col.ColumnName);
+                    projectors.Add(row => row[ordinal]);
+                    names.Add(colItem.Alias ?? (col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName));
+                    types.Add(table.Schema.Columns[ordinal].Type);
+                    break;
+                }
+                case ScalarFunctionSelectItem fnItem:
+                {
+                    var fn = fnItem.Fn;
+                    var args = fnItem.Args;
+                    Func<object?[], object?> projector = row => EvaluateScalarFunction(fn, args, table, row);
+                    projectors.Add(projector);
+                    var defaultName = fn switch
+                    {
+                        ScalarFn.Coalesce => "COALESCE",
+                        ScalarFn.Nullif => "NULLIF",
+                        ScalarFn.Ifnull => "IFNULL",
+                        _ => fn.ToString()
+                    };
+                    names.Add(fnItem.Alias ?? defaultName);
+                    types.Add(ColumnType.String); // scalar function returns vary; use String as default
+                    break;
+                }
+                default:
+                    throw new InvalidOperationException("Aggregate functions are not allowed outside a GROUP BY context.");
+            }
         }
 
-        return (ordinals.ToArray(), names.ToArray(), types.ToArray());
+        return (projectors.ToArray(), names.ToArray(), types.ToArray());
+    }
+
+    private static object? EvaluateScalarFunction(ScalarFn fn, IReadOnlyList<ScalarExpr> args, TableInfo table, object?[] row)
+    {
+        object?[] resolved = args.Select(arg => arg switch
+        {
+            ColumnScalarExpr ce => row[table.Schema.GetColumnOrdinal(ce.Column.ColumnName)],
+            LiteralScalarExpr le => le.Value.Value,
+            _ => throw new InvalidOperationException($"Unknown scalar expression type {arg.GetType().Name}.")
+        }).ToArray();
+
+        return fn switch
+        {
+            ScalarFn.Coalesce => resolved.FirstOrDefault(v => v is not null),
+            ScalarFn.Nullif => resolved[0] is null || resolved[1] is null
+                ? resolved[0]
+                : QueryExecutor.EvaluateComparison(resolved[0]!, ComparisonOp.Equals, resolved[1]!)
+                    ? null
+                    : resolved[0],
+            ScalarFn.Ifnull => resolved[0] is not null ? resolved[0] : resolved[1],
+            _ => throw new InvalidOperationException($"Unknown scalar function {fn}.")
+        };
     }
 
     private IReadOnlyList<object?[]> ReadFilteredRows(TableInfo table, WhereExpression filter)
@@ -852,11 +927,11 @@ public sealed class QueryEngine : IDisposable
             switch (item)
             {
                 case ColumnSelectItem colItem:
-                    outNames.Add(colItem.Column.ColumnName);
+                    outNames.Add(colItem.Alias ?? colItem.Column.ColumnName);
                     outTypes.Add(table.Schema.Columns[table.Schema.GetColumnOrdinal(colItem.Column.ColumnName)].Type);
                     break;
                 case AggregateSelectItem aggItem:
-                    outNames.Add(FormatAggregateName(aggItem));
+                    outNames.Add(aggItem.Alias ?? FormatAggregateName(aggItem));
                     if (aggItem.Fn == AggregateFn.Count)
                         outTypes.Add(ColumnType.Int64);
                     else if (aggItem.Fn == AggregateFn.Avg)
@@ -1004,6 +1079,18 @@ public sealed class QueryEngine : IDisposable
                 return i;
         }
         return -1;
+    }
+
+    private static object?[][] ApplyDistinct(object?[][] rows)
+    {
+        var seen = new HashSet<GroupKey>();
+        var result = new List<object?[]>(rows.Length);
+        foreach (var row in rows)
+        {
+            if (seen.Add(new GroupKey(row)))
+                result.Add(row);
+        }
+        return result.ToArray();
     }
 }
 

@@ -156,7 +156,7 @@ internal sealed class SqlParser
             var isPrimaryKey = false;
             var isNotNull = false;
 
-            // Parse any combination of NOT NULL and PRIMARY KEY in any order
+            // Parse any combination of NOT NULL, NULL, and PRIMARY KEY in any order
             bool consumed;
             do
             {
@@ -172,6 +172,11 @@ internal sealed class SqlParser
                 {
                     Expect(SqlTokenKind.Null);
                     isNotNull = true;
+                    consumed = true;
+                }
+                else if (Match(SqlTokenKind.Null))
+                {
+                    // Explicit NULL annotation — column is nullable (default), nothing to set
                     consumed = true;
                 }
             }
@@ -226,22 +231,27 @@ internal sealed class SqlParser
         }
 
         Expect(SqlTokenKind.Values);
-        Expect(SqlTokenKind.OpenParen);
 
-        var values = new List<SqlLiteral>();
+        var valueRows = new List<IReadOnlyList<SqlLiteral>>();
         do
         {
-            values.Add(ParseLiteral());
+            Expect(SqlTokenKind.OpenParen);
+            var values = new List<SqlLiteral>();
+            do { values.Add(ParseLiteral()); }
+            while (Match(SqlTokenKind.Comma));
+            Expect(SqlTokenKind.CloseParen);
+            valueRows.Add(values);
         }
         while (Match(SqlTokenKind.Comma));
 
-        Expect(SqlTokenKind.CloseParen);
-        return new InsertStatement(tableName, columns, values);
+        return new InsertStatement(tableName, columns, valueRows);
     }
 
     private SelectStatement ParseSelect()
     {
         Expect(SqlTokenKind.Select);
+
+        var isDistinct = Match(SqlTokenKind.Distinct);
 
         IReadOnlyList<SelectItem>? columns;
         if (Match(SqlTokenKind.Star))
@@ -336,19 +346,70 @@ internal sealed class SqlParser
             offset = (int)long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        var stmt = new SelectStatement(tableName, columns, filter, joins, groupBy, having, orderBy, limit, offset);
+        var stmt = new SelectStatement(tableName, columns, filter, joins, groupBy, having, orderBy, limit, offset, isDistinct);
         return aliasMap.Count > 0 ? ResolveAliases(stmt, aliasMap) : stmt;
     }
 
     private SelectItem ParseSelectItem()
     {
         var kind = Peek().Kind;
+        SelectItem item;
+
         if (kind is SqlTokenKind.Count or SqlTokenKind.Sum or SqlTokenKind.Min or SqlTokenKind.Max or SqlTokenKind.Avg)
+            item = ParseAggregateSelectItem();
+        else if (kind is SqlTokenKind.Coalesce or SqlTokenKind.Nullif or SqlTokenKind.Ifnull)
+            item = ParseScalarFunctionSelectItem();
+        else
+            item = new ColumnSelectItem(ParseColumnReference("Expected a column name in the SELECT list."));
+
+        if (Match(SqlTokenKind.As))
         {
-            return ParseAggregateSelectItem();
+            var alias = ExpectIdentifier("Expected an alias after AS in the SELECT list.");
+            item = item switch
+            {
+                ColumnSelectItem col => col with { Alias = alias },
+                AggregateSelectItem agg => agg with { Alias = alias },
+                ScalarFunctionSelectItem fn => fn with { Alias = alias },
+                _ => item
+            };
         }
 
-        return new ColumnSelectItem(ParseColumnReference("Expected a column name in the SELECT list."));
+        return item;
+    }
+
+    private ScalarFunctionSelectItem ParseScalarFunctionSelectItem()
+    {
+        var fnToken = Advance();
+        var fn = fnToken.Kind switch
+        {
+            SqlTokenKind.Coalesce => ScalarFn.Coalesce,
+            SqlTokenKind.Nullif => ScalarFn.Nullif,
+            SqlTokenKind.Ifnull => ScalarFn.Ifnull,
+            _ => throw new InvalidOperationException($"Expected a scalar function name, but found '{fnToken.Lexeme}'.")
+        };
+
+        Expect(SqlTokenKind.OpenParen);
+        var args = new List<ScalarExpr>();
+        do { args.Add(ParseScalarExpr()); }
+        while (Match(SqlTokenKind.Comma));
+        Expect(SqlTokenKind.CloseParen);
+
+        if (fn is ScalarFn.Nullif or ScalarFn.Ifnull && args.Count != 2)
+            throw new InvalidOperationException($"{fnToken.Lexeme} requires exactly 2 arguments.");
+        if (fn == ScalarFn.Coalesce && args.Count < 2)
+            throw new InvalidOperationException("COALESCE requires at least 2 arguments.");
+
+        return new ScalarFunctionSelectItem(fn, args);
+    }
+
+    private ScalarExpr ParseScalarExpr()
+    {
+        var kind = Peek().Kind;
+        if (kind is SqlTokenKind.StringLiteral or SqlTokenKind.IntegerLiteral or SqlTokenKind.FloatLiteral
+            or SqlTokenKind.BlobLiteral or SqlTokenKind.True or SqlTokenKind.False or SqlTokenKind.Null)
+            return new LiteralScalarExpr(ParseLiteral());
+
+        return new ColumnScalarExpr(ParseColumnReference("Expected a column reference or literal in scalar function arguments."));
     }
 
     private AggregateSelectItem ParseAggregateSelectItem()
@@ -468,8 +529,9 @@ internal sealed class SqlParser
         }
         while (Match(SqlTokenKind.Comma));
 
-        Expect(SqlTokenKind.Where);
-        var filter = ParseWhereExpression();
+        WhereExpression? filter = null;
+        if (Match(SqlTokenKind.Where))
+            filter = ParseWhereExpression();
 
         return new UpdateStatement(tableName, assignments, filter);
     }
@@ -480,8 +542,9 @@ internal sealed class SqlParser
         Expect(SqlTokenKind.From);
         var tableName = ExpectIdentifier("Expected a table name after DELETE FROM.");
 
-        Expect(SqlTokenKind.Where);
-        var filter = ParseWhereExpression();
+        WhereExpression? filter = null;
+        if (Match(SqlTokenKind.Where))
+            filter = ParseWhereExpression();
 
         return new DeleteStatement(tableName, filter);
     }
@@ -538,13 +601,37 @@ internal sealed class SqlParser
             return new NullCheckExpression(tableName, columnName, ExpectNull: true);
         }
 
+        // Handle NOT before IN / BETWEEN / LIKE
+        var negated = Match(SqlTokenKind.Not);
+
         if (Match(SqlTokenKind.In))
         {
             Expect(SqlTokenKind.OpenParen);
             var subquery = ParseSelect();
             Expect(SqlTokenKind.CloseParen);
-            return new InSubqueryExpression(tableName, columnName, subquery);
+            return new InSubqueryExpression(tableName, columnName, subquery, Negated: negated);
         }
+
+        if (Match(SqlTokenKind.Between))
+        {
+            var low = ParseLiteral();
+            Expect(SqlTokenKind.And);
+            var high = ParseLiteral();
+            return new BetweenExpression(tableName, columnName, low, high, Negated: negated);
+        }
+
+        if (Peek().Kind is SqlTokenKind.Like or SqlTokenKind.ILike)
+        {
+            var caseInsensitive = Peek().Kind == SqlTokenKind.ILike;
+            Advance();
+            var patternToken = Advance();
+            if (patternToken.Kind != SqlTokenKind.StringLiteral)
+                throw new InvalidOperationException("Expected a string literal after LIKE/ILIKE.");
+            return new LikeExpression(tableName, columnName, (string)patternToken.Value!, caseInsensitive, Negated: negated);
+        }
+
+        if (negated)
+            throw new InvalidOperationException($"NOT must be followed by IN, BETWEEN, or LIKE, but found '{Peek().Lexeme}'.");
 
         var op = ParseComparisonOp();
 
@@ -657,8 +744,16 @@ internal sealed class SqlParser
     {
         var columns = stmt.Columns?.Select(item => item switch
         {
-            ColumnSelectItem c => new ColumnSelectItem(ResolveRef(c.Column, aliasMap)),
-            AggregateSelectItem a => new AggregateSelectItem(a.Fn, a.Argument is null ? null : ResolveRef(a.Argument, aliasMap)),
+            ColumnSelectItem c => c with { Column = ResolveRef(c.Column, aliasMap) },
+            AggregateSelectItem a => a with { Argument = a.Argument is null ? null : ResolveRef(a.Argument, aliasMap) },
+            ScalarFunctionSelectItem f => f with
+            {
+                Args = f.Args.Select(arg => arg switch
+                {
+                    ColumnScalarExpr ce => new ColumnScalarExpr(ResolveRef(ce.Column, aliasMap)),
+                    _ => arg
+                }).ToList()
+            },
             _ => item
         }).ToList<SelectItem>();
 
@@ -671,7 +766,7 @@ internal sealed class SqlParser
 
         var orderBy = stmt.OrderBy?.Select(t => new OrderByTerm(ResolveRef(t.Column, aliasMap), t.Descending)).ToList();
 
-        return new SelectStatement(stmt.TableName, columns, filter, joins, stmt.GroupBy, stmt.Having, orderBy, stmt.Limit, stmt.Offset);
+        return new SelectStatement(stmt.TableName, columns, filter, joins, stmt.GroupBy, stmt.Having, orderBy, stmt.Limit, stmt.Offset, stmt.IsDistinct);
     }
 
     private static ColumnReference ResolveRef(ColumnReference col, Dictionary<string, string> aliasMap) =>
@@ -688,6 +783,8 @@ internal sealed class SqlParser
             ResolveWhereAliases(b.Left, aliasMap), b.Op, ResolveWhereAliases(b.Right, aliasMap)),
         InSubqueryExpression i => i with { TableName = i.TableName is null ? null : ResolveTableAlias(i.TableName, aliasMap) },
         ScalarSubqueryComparisonExpression s => s with { TableName = s.TableName is null ? null : ResolveTableAlias(s.TableName, aliasMap) },
+        LikeExpression l => l with { TableName = l.TableName is null ? null : ResolveTableAlias(l.TableName, aliasMap) },
+        BetweenExpression be => be with { TableName = be.TableName is null ? null : ResolveTableAlias(be.TableName, aliasMap) },
         _ => expr
     };
 }
@@ -698,7 +795,7 @@ internal sealed record CreateTableStatement(string TableName, IReadOnlyList<Colu
 
 internal sealed record CreateIndexStatement(string IndexName, bool IsUnique, string TableName, IReadOnlyList<string> Columns) : SqlStatement;
 
-internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<SqlLiteral> Values) : SqlStatement;
+internal sealed record InsertStatement(string TableName, IReadOnlyList<string>? Columns, IReadOnlyList<IReadOnlyList<SqlLiteral>> ValueRows) : SqlStatement;
 
 internal sealed record DropTableStatement(string TableName) : SqlStatement;
 
@@ -708,11 +805,11 @@ internal sealed record AlterTableAddColumnStatement(string TableName, ColumnSpec
 
 internal sealed record AlterTableRenameColumnStatement(string TableName, string OldColumnName, string NewColumnName) : SqlStatement;
 
-internal sealed record SelectStatement(string TableName, IReadOnlyList<SelectItem>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins, IReadOnlyList<string>? GroupBy, HavingExpression? Having, IReadOnlyList<OrderByTerm>? OrderBy, int? Limit, int? Offset) : SqlStatement;
+internal sealed record SelectStatement(string TableName, IReadOnlyList<SelectItem>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins, IReadOnlyList<string>? GroupBy, HavingExpression? Having, IReadOnlyList<OrderByTerm>? OrderBy, int? Limit, int? Offset, bool IsDistinct = false) : SqlStatement;
 
-internal sealed record DeleteStatement(string TableName, WhereExpression Filter) : SqlStatement;
+internal sealed record DeleteStatement(string TableName, WhereExpression? Filter) : SqlStatement;
 
-internal sealed record UpdateStatement(string TableName, IReadOnlyList<ColumnAssignment> Assignments, WhereExpression Filter) : SqlStatement;
+internal sealed record UpdateStatement(string TableName, IReadOnlyList<ColumnAssignment> Assignments, WhereExpression? Filter) : SqlStatement;
 
 internal sealed record ColumnAssignment(string ColumnName, SqlLiteral Value);
 
@@ -737,13 +834,17 @@ internal sealed record BinaryLogicalExpression(WhereExpression Left, LogicalOp O
 internal sealed record NullCheckExpression(string? TableName, string ColumnName, bool ExpectNull) : WhereExpression;
 
 /// <summary>col IN (SELECT …) — produced by the parser; resolved to <see cref="InValuesExpression"/> at execution time.</summary>
-internal sealed record InSubqueryExpression(string? TableName, string ColumnName, SelectStatement Subquery) : WhereExpression;
+internal sealed record InSubqueryExpression(string? TableName, string ColumnName, SelectStatement Subquery, bool Negated = false) : WhereExpression;
 
 /// <summary>col = (SELECT …) — produced by the parser; resolved to <see cref="ComparisonExpression"/> at execution time.</summary>
 internal sealed record ScalarSubqueryComparisonExpression(string? TableName, string ColumnName, ComparisonOp Op, SelectStatement Subquery) : WhereExpression;
 
 /// <summary>col IN (v1, v2, …) — produced at execution time after pre-evaluating an <see cref="InSubqueryExpression"/>.</summary>
-internal sealed record InValuesExpression(string? TableName, string ColumnName, IReadOnlyList<object?> Values) : WhereExpression;
+internal sealed record InValuesExpression(string? TableName, string ColumnName, IReadOnlyList<object?> Values, bool Negated = false) : WhereExpression;
+
+internal sealed record LikeExpression(string? TableName, string ColumnName, string Pattern, bool CaseInsensitive, bool Negated = false) : WhereExpression;
+
+internal sealed record BetweenExpression(string? TableName, string ColumnName, SqlLiteral Low, SqlLiteral High, bool Negated = false) : WhereExpression;
 
 internal enum ComparisonOp { Equals, NotEquals, LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals }
 
@@ -755,12 +856,22 @@ internal sealed record SqlLiteral(object? Value);
 
 internal abstract record SelectItem;
 
-internal sealed record ColumnSelectItem(ColumnReference Column) : SelectItem;
+internal sealed record ColumnSelectItem(ColumnReference Column, string? Alias = null) : SelectItem;
 
 /// <summary>Aggregate function call in a SELECT list. <c>Argument</c> is null for COUNT(*).</summary>
-internal sealed record AggregateSelectItem(AggregateFn Fn, ColumnReference? Argument) : SelectItem;
+internal sealed record AggregateSelectItem(AggregateFn Fn, ColumnReference? Argument, string? Alias = null) : SelectItem;
 
 internal enum AggregateFn { Count, Sum, Min, Max, Avg }
+
+internal enum ScalarFn { Coalesce, Nullif, Ifnull }
+
+internal abstract record ScalarExpr;
+
+internal sealed record ColumnScalarExpr(ColumnReference Column) : ScalarExpr;
+
+internal sealed record LiteralScalarExpr(SqlLiteral Value) : ScalarExpr;
+
+internal sealed record ScalarFunctionSelectItem(ScalarFn Fn, IReadOnlyList<ScalarExpr> Args, string? Alias = null) : SelectItem;
 
 // ── ORDER BY ─────────────────────────────────────────────────────────────────
 

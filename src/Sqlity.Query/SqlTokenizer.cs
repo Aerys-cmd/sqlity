@@ -143,6 +143,13 @@ internal static class SqlTokenizer
             "TO" => SqlTokenKind.To,
             "IN" => SqlTokenKind.In,
             "AS" => SqlTokenKind.As,
+            "LIKE" => SqlTokenKind.Like,
+            "ILIKE" => SqlTokenKind.ILike,
+            "BETWEEN" => SqlTokenKind.Between,
+            "DISTINCT" => SqlTokenKind.Distinct,
+            "COALESCE" => SqlTokenKind.Coalesce,
+            "NULLIF" => SqlTokenKind.Nullif,
+            "IFNULL" => SqlTokenKind.Ifnull,
             _ => SqlTokenKind.Identifier
         };
 
@@ -323,5 +330,12 @@ internal enum SqlTokenKind
     To = 65,
     FloatLiteral = 66,
     In = 67,
-    As = 68
+    As = 68,
+    Like = 69,
+    ILike = 70,
+    Between = 71,
+    Distinct = 72,
+    Coalesce = 73,
+    Nullif = 74,
+    Ifnull = 75,
 }
