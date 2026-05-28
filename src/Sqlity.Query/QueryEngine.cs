@@ -766,9 +766,83 @@ public sealed class QueryEngine : IDisposable
                     ? null
                     : resolved[0],
             ScalarFn.Ifnull => resolved[0] is not null ? resolved[0] : resolved[1],
+
+            // String functions — return null if the subject arg is null
+            ScalarFn.Upper => resolved[0] is null ? null : Convert.ToString(resolved[0])!.ToUpperInvariant(),
+            ScalarFn.Lower => resolved[0] is null ? null : Convert.ToString(resolved[0])!.ToLowerInvariant(),
+            ScalarFn.Trim => resolved[0] is null ? null : Convert.ToString(resolved[0])!.Trim(),
+            ScalarFn.Length => resolved[0] is null ? null : (long)Convert.ToString(resolved[0])!.Length,
+            ScalarFn.Substr => EvalSubstr(resolved),
+            ScalarFn.Replace => EvalReplace(resolved),
+
+            // Numeric functions — return null if the subject arg is null
+            ScalarFn.Abs => EvalAbs(resolved[0]),
+            ScalarFn.Round => EvalRound(resolved),
+            ScalarFn.Ceil => resolved[0] is null ? null : EvalCeil(resolved[0]!),
+            ScalarFn.Floor => resolved[0] is null ? null : EvalFloor(resolved[0]!),
+
             _ => throw new InvalidOperationException($"Unknown scalar function {fn}.")
         };
     }
+
+    private static object? EvalSubstr(object?[] args)
+    {
+        if (args[0] is null || args[1] is null) return null;
+        var s = Convert.ToString(args[0])!;
+        var start = Convert.ToInt32(args[1]) - 1; // convert 1-based to 0-based
+        if (start < 0) start = 0;
+        if (start >= s.Length) return string.Empty;
+        if (args.Length == 3 && args[2] is not null)
+        {
+            var len = Convert.ToInt32(args[2]);
+            if (len <= 0) return string.Empty;
+            len = Math.Min(len, s.Length - start);
+            return s.Substring(start, len);
+        }
+        return s[start..];
+    }
+
+    private static object? EvalReplace(object?[] args)
+    {
+        if (args[0] is null) return null;
+        var s = Convert.ToString(args[0])!;
+        var from = args[1] is null ? string.Empty : Convert.ToString(args[1])!;
+        var to = args[2] is null ? string.Empty : Convert.ToString(args[2])!;
+        return from.Length == 0 ? s : s.Replace(from, to, StringComparison.Ordinal);
+    }
+
+    private static object? EvalAbs(object? arg)
+    {
+        return arg switch
+        {
+            null => null,
+            long l => Math.Abs(l),
+            double d => Math.Abs(d),
+            _ => Math.Abs(Convert.ToDouble(arg))
+        };
+    }
+
+    private static object? EvalRound(object?[] args)
+    {
+        if (args[0] is null) return null;
+        var d = Convert.ToDouble(args[0]);
+        var digits = args.Length == 2 && args[1] is not null ? Convert.ToInt32(args[1]) : 0;
+        return Math.Round(d, digits, MidpointRounding.AwayFromZero);
+    }
+
+    private static object EvalCeil(object arg) => arg switch
+    {
+        long l => (object)l,
+        double d => Math.Ceiling(d),
+        _ => Math.Ceiling(Convert.ToDouble(arg))
+    };
+
+    private static object EvalFloor(object arg) => arg switch
+    {
+        long l => (object)l,
+        double d => Math.Floor(d),
+        _ => Math.Floor(Convert.ToDouble(arg))
+    };
 
     private IReadOnlyList<object?[]> ReadFilteredRows(TableInfo table, WhereExpression filter)
     {

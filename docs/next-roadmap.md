@@ -24,6 +24,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - CLI with single-statement and stdin-piping modes ✅
 - `LIKE` / `ILIKE`, `BETWEEN` / `NOT BETWEEN`, `NOT IN`, `SELECT DISTINCT`, UPDATE/DELETE without `WHERE`, multi-row `INSERT`, column aliases, `COALESCE` / `NULLIF` / `IFNULL` ✅
 - `DEFAULT expr`, `AUTOINCREMENT` / `SERIAL`, inline `UNIQUE`, `INSERT OR REPLACE`, `INSERT INTO t SELECT`, `CREATE VIEW`, `TRUNCATE TABLE` ✅
+- Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR` ✅
 
 ---
 
@@ -58,7 +59,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 ## Phase 3 — Advanced SQL
 
-- Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR`
+- ✅ Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR`
 - `CASE WHEN cond THEN expr … ELSE expr END` expressions in SELECT and WHERE
 - `EXISTS (SELECT …)` / `NOT EXISTS (SELECT …)` as WHERE atoms
 - `UNION` / `UNION ALL` — combine two SELECT results

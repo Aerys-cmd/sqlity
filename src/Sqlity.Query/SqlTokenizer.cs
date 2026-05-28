@@ -156,6 +156,15 @@ internal static class SqlTokenizer
             "REPLACE" => SqlTokenKind.Replace,
             "VIEW" => SqlTokenKind.View,
             "TRUNCATE" => SqlTokenKind.Truncate,
+            "UPPER" => SqlTokenKind.Upper,
+            "LOWER" => SqlTokenKind.Lower,
+            "TRIM" => SqlTokenKind.Trim,
+            "LENGTH" => SqlTokenKind.Length,
+            "SUBSTR" => SqlTokenKind.Substr,
+            "ABS" => SqlTokenKind.Abs,
+            "ROUND" => SqlTokenKind.Round,
+            "CEIL" => SqlTokenKind.Ceil,
+            "FLOOR" => SqlTokenKind.Floor,
             _ => SqlTokenKind.Identifier
         };
 
@@ -350,4 +359,13 @@ internal enum SqlTokenKind
     Replace = 79,
     View = 80,
     Truncate = 81,
+    Upper = 82,
+    Lower = 83,
+    Trim = 84,
+    Length = 85,
+    Substr = 86,
+    Abs = 87,
+    Round = 88,
+    Ceil = 89,
+    Floor = 90,
 }

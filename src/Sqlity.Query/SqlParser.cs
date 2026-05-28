@@ -435,7 +435,12 @@ internal sealed class SqlParser
 
         if (kind is SqlTokenKind.Count or SqlTokenKind.Sum or SqlTokenKind.Min or SqlTokenKind.Max or SqlTokenKind.Avg)
             item = ParseAggregateSelectItem();
-        else if (kind is SqlTokenKind.Coalesce or SqlTokenKind.Nullif or SqlTokenKind.Ifnull)
+        else if (kind is SqlTokenKind.Coalesce or SqlTokenKind.Nullif or SqlTokenKind.Ifnull
+                      or SqlTokenKind.Upper or SqlTokenKind.Lower or SqlTokenKind.Trim
+                      or SqlTokenKind.Length or SqlTokenKind.Substr
+                      or SqlTokenKind.Abs or SqlTokenKind.Round or SqlTokenKind.Ceil or SqlTokenKind.Floor)
+            item = ParseScalarFunctionSelectItem();
+        else if (kind == SqlTokenKind.Replace && PeekAhead(1).Kind == SqlTokenKind.OpenParen)
             item = ParseScalarFunctionSelectItem();
         else
             item = new ColumnSelectItem(ParseColumnReference("Expected a column name in the SELECT list."));
@@ -463,6 +468,16 @@ internal sealed class SqlParser
             SqlTokenKind.Coalesce => ScalarFn.Coalesce,
             SqlTokenKind.Nullif => ScalarFn.Nullif,
             SqlTokenKind.Ifnull => ScalarFn.Ifnull,
+            SqlTokenKind.Upper => ScalarFn.Upper,
+            SqlTokenKind.Lower => ScalarFn.Lower,
+            SqlTokenKind.Trim => ScalarFn.Trim,
+            SqlTokenKind.Length => ScalarFn.Length,
+            SqlTokenKind.Substr => ScalarFn.Substr,
+            SqlTokenKind.Replace => ScalarFn.Replace,
+            SqlTokenKind.Abs => ScalarFn.Abs,
+            SqlTokenKind.Round => ScalarFn.Round,
+            SqlTokenKind.Ceil => ScalarFn.Ceil,
+            SqlTokenKind.Floor => ScalarFn.Floor,
             _ => throw new InvalidOperationException($"Expected a scalar function name, but found '{fnToken.Lexeme}'.")
         };
 
@@ -476,6 +491,15 @@ internal sealed class SqlParser
             throw new InvalidOperationException($"{fnToken.Lexeme} requires exactly 2 arguments.");
         if (fn == ScalarFn.Coalesce && args.Count < 2)
             throw new InvalidOperationException("COALESCE requires at least 2 arguments.");
+        if (fn is ScalarFn.Upper or ScalarFn.Lower or ScalarFn.Trim or ScalarFn.Length
+                 or ScalarFn.Abs or ScalarFn.Ceil or ScalarFn.Floor && args.Count != 1)
+            throw new InvalidOperationException($"{fnToken.Lexeme} requires exactly 1 argument.");
+        if (fn == ScalarFn.Substr && args.Count is not (2 or 3))
+            throw new InvalidOperationException("SUBSTR requires 2 or 3 arguments.");
+        if (fn == ScalarFn.Replace && args.Count != 3)
+            throw new InvalidOperationException("REPLACE requires exactly 3 arguments.");
+        if (fn == ScalarFn.Round && args.Count is not (1 or 2))
+            throw new InvalidOperationException("ROUND requires 1 or 2 arguments.");
 
         return new ScalarFunctionSelectItem(fn, args);
     }
@@ -945,7 +969,7 @@ internal sealed record AggregateSelectItem(AggregateFn Fn, ColumnReference? Argu
 
 internal enum AggregateFn { Count, Sum, Min, Max, Avg }
 
-internal enum ScalarFn { Coalesce, Nullif, Ifnull }
+internal enum ScalarFn { Coalesce, Nullif, Ifnull, Upper, Lower, Trim, Length, Substr, Replace, Abs, Round, Ceil, Floor }
 
 internal abstract record ScalarExpr;
 
