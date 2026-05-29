@@ -115,7 +115,7 @@ public sealed class StorageEngine : IDisposable
     /// query planner's lazy auto-analyze, which must not have hidden write side-effects
     /// during a SELECT).
     /// </param>
-    public void AnalyzeTable(string tableName, bool persist = true)
+    public void AnalyzeTable(string tableName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
 
@@ -140,8 +140,7 @@ public sealed class StorageEngine : IDisposable
         var stats = new TableStatistics(cells.Count, ndv);
         _statistics[tableName] = stats;
 
-        if (persist)
-            PersistStats(tableName, stats);
+        PersistStats(tableName, stats);
     }
 
     /// <summary>Analyzes every user table. Equivalent to running <c>ANALYZE</c> without a table name.</summary>

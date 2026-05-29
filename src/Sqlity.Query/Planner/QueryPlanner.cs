@@ -36,11 +36,6 @@ internal sealed class QueryPlanner
         var atoms = filter is not null ? FlattenAnds(filter) : [];
         var indexes = _storage.GetIndexesForTable(table.TableName);
 
-        // Lazily collect statistics on first plan for this table so callers never need to
-        // run ANALYZE manually. Uses persist:false so a read-only SELECT never has hidden
-        // write side-effects; stats persist to disk only via explicit ANALYZE statements.
-        if (_storage.GetStatistics(table.TableName) is null)
-            _storage.AnalyzeTable(table.TableName, persist: false);
         var stats = _storage.GetStatistics(table.TableName);
 
         // Cost-based selection is only useful when the table has rows; with 0 rows every
