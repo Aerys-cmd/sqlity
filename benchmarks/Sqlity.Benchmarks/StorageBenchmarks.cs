@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Sqlity.Storage;
+using Sqlity.Storage.IO;
 using Sqlity.Storage.Rows;
 
 namespace Sqlity.Benchmarks;

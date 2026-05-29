@@ -67,10 +67,8 @@ public sealed class StorageEngine : IDisposable
     /// <summary>
     /// Opens (or creates) a database at <paramref name="filePath"/>.
     /// Pass <c>":memory:"</c> to open a transient in-memory database with no file I/O.
-    /// Set <paramref name="useWal"/> to <see langword="true"/> to use Write-Ahead Logging
-    /// instead of the default rollback journal durability mode.
     /// </summary>
-    public static StorageEngine Open(string filePath, bool useWal = false)
+    public static StorageEngine Open(string filePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
 
@@ -79,16 +77,6 @@ public sealed class StorageEngine : IDisposable
             var memPager = new InMemoryPager();
             memPager.InitializeNew();
             return new StorageEngine(memPager, ownsPager: true);
-        }
-
-        if (useWal)
-        {
-            var walPager = new WalPager(filePath);
-            if (new FileInfo(filePath).Length == 0)
-                walPager.InitializeNew();
-            else
-                walPager.RecoverIfNeeded();
-            return new StorageEngine(walPager, ownsPager: true);
         }
 
         var filePager = new FilePager(filePath);

@@ -26,7 +26,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - `DEFAULT expr`, `AUTOINCREMENT` / `SERIAL`, inline `UNIQUE`, `INSERT OR REPLACE`, `INSERT INTO t SELECT`, `CREATE VIEW`, `TRUNCATE TABLE` ✅
 - Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR` ✅
 - `CASE WHEN … THEN … END` expressions, `EXISTS` / `NOT EXISTS`, `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`, CTEs (`WITH … AS`), window functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`) ✅
-- In-memory mode, buffer pool (LRU), overflow pages, Write-Ahead Logging (`useWal: true`) ✅
+- In-memory mode, buffer pool (LRU), overflow pages ✅
 
 ---
 
@@ -79,7 +79,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - **In-memory mode** — `StorageEngine.Open(":memory:")` uses `InMemoryPager`; no file I/O; useful for tests and embedded scenarios ✅
 - **Buffer pool with LRU eviction** — `BufferedPager` wraps any `IPager` with a capacity-bounded LRU cache; dirty pages flushed on eviction or commit ✅
 - **Overflow pages for large rows** — rows exceeding page capacity spill across chained overflow pages; B-tree insert / read / delete paths updated; hard per-row size limit lifted ✅
-- **Write-Ahead Logging (WAL)** — `WalPager` implements WAL as an alternative durability mode; atomic two-phase commit (uncommitted marker → frames → committed marker); crash recovery replays committed WAL on reopen; opt-in via `StorageEngine.Open(path, useWal: true)` ✅
+- **Write-Ahead Logging (WAL)** — removed; `WalPager` was an immediate-checkpoint WAL that provided no advantage over the default `BufferedPager(FilePager)` stack
 - **Cost-based query planner** — `ANALYZE [table_name]` collects per-table row counts and per-column distinct-value estimates; `QueryPlanner` uses cardinality-driven cost model (`rowCount × Π(1/ndv_col)`) to pick the most selective index seek, falling back to rule-based scoring when no statistics are available ✅
 - **Persistent query-planner statistics** — stats are stored in an on-disk `__sqlity_stat1` catalog page (format version 4) and loaded automatically on engine open, SQLite-style; DDL operations (`DROP TABLE`, `RENAME TABLE`, `ADD COLUMN`, `RENAME COLUMN`, `TRUNCATE TABLE`) invalidate or migrate stats; lazy auto-analyze from the planner is memory-only (no hidden writes); explicit `ANALYZE` persists to disk with best-effort semantics (full catalog never crashes a query) ✅
 
