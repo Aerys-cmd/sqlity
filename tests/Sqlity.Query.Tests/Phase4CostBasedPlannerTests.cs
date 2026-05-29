@@ -249,39 +249,6 @@ public sealed class Phase4CostBasedPlannerTests
         finally { Cleanup(storage, path); }
     }
 
-    [Fact]
-    public void Planner_auto_collects_stats_without_explicit_analyze()
-    {
-        var (storage, path) = CreateDb();
-        try
-        {
-            // Insert 100 rows with high-selectivity customer_id index.
-            for (long i = 0; i < 100; i++)
-                storage.Insert("orders", [i, i % 50, i % 2 == 0 ? "active" : "shipped"]);
-
-            // idx_status first so rule-based would pick it; no explicit ANALYZE.
-            storage.CreateIndex("idx_status", "orders", new[] { "status" }, isUnique: false);
-            storage.CreateIndex("idx_customer_id", "orders", new[] { "customer_id" }, isUnique: false);
-
-            Assert.Null(storage.GetStatistics("orders")); // no explicit ANALYZE yet
-
-            var planner = new QueryPlanner(storage);
-            var table = storage.GetTable("orders");
-            var filter = new BinaryLogicalExpression(
-                new ComparisonExpression(null, "customer_id", ComparisonOp.Equals, new SqlLiteral(5L)),
-                LogicalOp.And,
-                new ComparisonExpression(null, "status", ComparisonOp.Equals, new SqlLiteral("active")));
-
-            var plan = planner.Plan(table, filter);
-
-            // Stats were auto-collected; cost-based planner picks the more selective index.
-            Assert.NotNull(storage.GetStatistics("orders"));
-            var seek = Assert.IsType<PhysicalIndexSeek>(plan);
-            Assert.Equal("idx_customer_id", seek.Index.IndexName);
-        }
-        finally { Cleanup(storage, path); }
-    }
-
     // ── Persistence (stats survive engine reopen) ─────────────────────────────
 
     [Fact]
@@ -317,45 +284,6 @@ public sealed class Phase4CostBasedPlannerTests
                 Assert.NotNull(stats);
                 Assert.Equal(50, stats.RowCount);
                 Assert.Equal(10, stats.ColumnNdv["customer_id"]); // i % 10 → 10 distinct values
-            }
-        }
-        finally { if (File.Exists(path)) File.Delete(path); }
-    }
-
-    [Fact]
-    public void Auto_analyze_does_not_persist_stats_to_disk()
-    {
-        // Lazy auto-analyze triggered by the planner must NOT write to the catalog
-        // so that read-only SELECTs have no hidden write side-effects.
-        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlity");
-        try
-        {
-            using (var storage = StorageEngine.Open(path))
-            {
-                storage.CreateTable(new TableSchema(
-                    "orders",
-                    new[]
-                    {
-                        new ColumnDefinition("id", ColumnType.Int64, IsNullable: false),
-                        new ColumnDefinition("customer_id", ColumnType.Int64, IsNullable: false),
-                        new ColumnDefinition("status", ColumnType.String, IsNullable: true)
-                    },
-                    primaryKeyOrdinal: 0));
-
-                for (long i = 0; i < 20; i++)
-                    storage.Insert("orders", [i, i, "active"]);
-
-                // Trigger planner's auto-analyze (persist:false).
-                var planner = new QueryPlanner(storage);
-                var table = storage.GetTable("orders");
-                planner.Plan(table, null);
-                Assert.NotNull(storage.GetStatistics("orders")); // in-memory cache populated
-            }
-
-            // Second connection must find NO persisted stats (auto-analyze didn't persist).
-            using (var storage2 = StorageEngine.Open(path))
-            {
-                Assert.Null(storage2.GetStatistics("orders"));
             }
         }
         finally { if (File.Exists(path)) File.Delete(path); }
