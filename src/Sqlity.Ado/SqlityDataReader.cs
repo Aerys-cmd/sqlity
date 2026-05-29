@@ -133,6 +133,63 @@ public sealed class SqlityDataReader : DbDataReader
         return count;
     }
 
+    public override DataTable GetSchemaTable()
+    {
+        var schemaTable = new DataTable("SchemaTable");
+
+        schemaTable.Columns.Add(SchemaTableColumn.ColumnName,        typeof(string));
+        schemaTable.Columns.Add(SchemaTableColumn.ColumnOrdinal,     typeof(int));
+        schemaTable.Columns.Add(SchemaTableColumn.ColumnSize,        typeof(int));
+        schemaTable.Columns.Add(SchemaTableColumn.NumericPrecision,  typeof(short));
+        schemaTable.Columns.Add(SchemaTableColumn.NumericScale,      typeof(short));
+        schemaTable.Columns.Add(SchemaTableColumn.DataType,          typeof(Type));
+        schemaTable.Columns.Add(SchemaTableColumn.ProviderType,      typeof(int));
+        schemaTable.Columns.Add(SchemaTableColumn.IsLong,            typeof(bool));
+        schemaTable.Columns.Add(SchemaTableColumn.AllowDBNull,       typeof(bool));
+        schemaTable.Columns.Add(SchemaTableOptionalColumn.IsReadOnly,      typeof(bool));
+        schemaTable.Columns.Add(SchemaTableOptionalColumn.IsRowVersion,    typeof(bool));
+        schemaTable.Columns.Add(SchemaTableColumn.IsUnique,          typeof(bool));
+        schemaTable.Columns.Add(SchemaTableColumn.IsKey,             typeof(bool));
+        schemaTable.Columns.Add(SchemaTableOptionalColumn.IsAutoIncrement, typeof(bool));
+        schemaTable.Columns.Add(SchemaTableColumn.BaseColumnName,    typeof(string));
+        schemaTable.Columns.Add(SchemaTableColumn.BaseSchemaName,    typeof(string));
+        schemaTable.Columns.Add(SchemaTableColumn.BaseTableName,     typeof(string));
+
+        for (var i = 0; i < FieldCount; i++)
+        {
+            var allowNull = _result.ColumnNullables.Count > 0
+                ? _result.ColumnNullables[i]
+                : true;
+
+            var providerType = _result.ColumnTypes.Count > 0
+                ? (int)_result.ColumnTypes[i]
+                : 0;
+
+            schemaTable.Rows.Add(
+                _result.Columns[i],  // ColumnName
+                i,                   // ColumnOrdinal
+                -1,                  // ColumnSize — unbounded for strings/blobs
+                DBNull.Value,        // NumericPrecision
+                DBNull.Value,        // NumericScale
+                GetFieldType(i),     // DataType
+                providerType,        // ProviderType
+                false,               // IsLong
+                allowNull,           // AllowDBNull
+                true,                // IsReadOnly
+                false,               // IsRowVersion
+                false,               // IsUnique
+                false,               // IsKey
+                false,               // IsAutoIncrement
+                _result.Columns[i],  // BaseColumnName
+                DBNull.Value,        // BaseSchemaName
+                DBNull.Value         // BaseTableName
+            );
+        }
+
+        return schemaTable;
+    }
+
+
     public override object this[int ordinal] => GetValue(ordinal);
     public override object this[string name]  => GetValue(GetOrdinal(name));
 

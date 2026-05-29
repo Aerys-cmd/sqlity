@@ -312,7 +312,7 @@ public sealed class QueryEngine : IDisposable
             rowSeq = ApplyOrderBy(rowSeq.ToArray(), outer.OrderBy, ctx);
         }
 
-        var (projectors, projectedColumns, projectedColumnTypes) =
+        var (projectors, projectedColumns, projectedColumnTypes, projectedColumnNullables) =
             BindSingleTableSelectItems(viewTable, outer.Columns);
 
         var projectedRows = rowSeq
@@ -324,7 +324,7 @@ public sealed class QueryEngine : IDisposable
 
         projectedRows = ApplyLimitOffset(projectedRows, outer.Limit, outer.Offset).ToArray();
 
-        return QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
+        return QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes, projectedColumnNullables);
     }
 
     private QueryExecutionResult ExecuteInsert(InsertStatement statement)
@@ -443,7 +443,7 @@ public sealed class QueryEngine : IDisposable
                     new[] { (Table: fromTable, Offset: 0) });
             }
 
-            var (projectors, projectedColumns, projectedColumnTypes) =
+            var (projectors, projectedColumns, projectedColumnTypes, projectedColumnNullables) =
                 BindSingleTableSelectItems(fromTable, stmtForBase.Columns);
 
             var projectedRows = rowSeq
@@ -455,7 +455,7 @@ public sealed class QueryEngine : IDisposable
 
             projectedRows = ApplyLimitOffset(projectedRows, stmtForBase.Limit, stmtForBase.Offset).ToArray();
 
-            baseResult = QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
+            baseResult = QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes, projectedColumnNullables);
         }
         else
         {
@@ -526,13 +526,13 @@ public sealed class QueryEngine : IDisposable
 
         filteredRows = ApplyLimitOffset(filteredRows, statement.Limit, statement.Offset);
 
-        var (selectedIndices, outputColumnNames, outputColumnTypes) = BindJoinColumns(statement.Columns, context);
+        var (selectedIndices, outputColumnNames, outputColumnTypes, outputColumnNullables) = BindJoinColumns(statement.Columns, context);
 
         var projectedRows2 = filteredRows
             .Select(row => selectedIndices.Select(i => row[i]).ToArray())
             .ToArray();
 
-        return QueryExecutionResult.WithRows(outputColumnNames, projectedRows2, outputColumnTypes);
+        return QueryExecutionResult.WithRows(outputColumnNames, projectedRows2, outputColumnTypes, outputColumnNullables);
     }
 
     private QueryExecutionResult ExecuteDelete(DeleteStatement statement)
@@ -761,7 +761,7 @@ public sealed class QueryEngine : IDisposable
     /// Handles plain column references, scalar functions, and column aliases.
     /// Aggregate items are handled separately by the aggregation path.
     /// </summary>
-    private static (Func<object?[], object?>[] Projectors, string[] Names, ColumnType[] Types) BindSingleTableSelectItems(
+    private static (Func<object?[], object?>[] Projectors, string[] Names, ColumnType[] Types, bool[] Nullables) BindSingleTableSelectItems(
         TableInfo table,
         IReadOnlyList<SelectItem>? items)
     {
@@ -774,7 +774,9 @@ public sealed class QueryEngine : IDisposable
                 .Select(i => table.Schema.Columns[i].Name).ToArray();
             var allTypes = Enumerable.Range(0, table.Schema.Columns.Count)
                 .Select(i => table.Schema.Columns[i].Type).ToArray();
-            return (allProjectors, allNames, allTypes);
+            var allNullables = Enumerable.Range(0, table.Schema.Columns.Count)
+                .Select(i => table.Schema.Columns[i].IsNullable).ToArray();
+            return (allProjectors, allNames, allTypes, allNullables);
         }
 
         if (items.Count == 0)
@@ -783,6 +785,7 @@ public sealed class QueryEngine : IDisposable
         var projectors = new List<Func<object?[], object?>>();
         var names = new List<string>();
         var types = new List<ColumnType>();
+        var nullables = new List<bool>();
 
         foreach (var item in items)
         {
@@ -799,6 +802,7 @@ public sealed class QueryEngine : IDisposable
                         projectors.Add(row => row[ordinal]);
                         names.Add(colItem.Alias ?? (col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName));
                         types.Add(table.Schema.Columns[ordinal].Type);
+                        nullables.Add(table.Schema.Columns[ordinal].IsNullable);
                         break;
                     }
                 case ScalarFunctionSelectItem fnItem:
@@ -816,6 +820,7 @@ public sealed class QueryEngine : IDisposable
                         };
                         names.Add(fnItem.Alias ?? defaultName);
                         types.Add(ColumnType.String); // scalar function returns vary; use String as default
+                        nullables.Add(true);
                         break;
                     }
                 case CaseWhenSelectItem caseItem:
@@ -825,6 +830,7 @@ public sealed class QueryEngine : IDisposable
                         projectors.Add(projector);
                         names.Add(caseItem.Alias ?? "CASE");
                         types.Add(ColumnType.String);
+                        nullables.Add(true);
                         break;
                     }
                 default:
@@ -832,7 +838,7 @@ public sealed class QueryEngine : IDisposable
             }
         }
 
-        return (projectors.ToArray(), names.ToArray(), types.ToArray());
+        return (projectors.ToArray(), names.ToArray(), types.ToArray(), nullables.ToArray());
     }
 
     private static object? EvaluateCaseWhen(
@@ -1016,17 +1022,19 @@ public sealed class QueryEngine : IDisposable
         return entry;
     }
 
-    private static (int[] Indices, string[] Names, ColumnType[] Types) BindJoinColumns(
+    private static (int[] Indices, string[] Names, ColumnType[] Types, bool[] Nullables) BindJoinColumns(
         IReadOnlyList<SelectItem>? items,
         IReadOnlyList<(TableInfo Table, int Offset)> context)
     {
         var flatTypes = BuildFlatTypeArray(context);
+        var flatNullables = BuildFlatNullableArray(context);
 
         if (items is null)
         {
             var allIndices = new List<int>();
             var allNames = new List<string>();
             var allTypes = new List<ColumnType>();
+            var allNullables = new List<bool>();
             foreach (var (table, offset) in context)
             {
                 for (var i = 0; i < table.Schema.Columns.Count; i++)
@@ -1034,9 +1042,10 @@ public sealed class QueryEngine : IDisposable
                     allIndices.Add(offset + i);
                     allNames.Add($"{table.TableName}.{table.Schema.Columns[i].Name}");
                     allTypes.Add(table.Schema.Columns[i].Type);
+                    allNullables.Add(table.Schema.Columns[i].IsNullable);
                 }
             }
-            return (allIndices.ToArray(), allNames.ToArray(), allTypes.ToArray());
+            return (allIndices.ToArray(), allNames.ToArray(), allTypes.ToArray(), allNullables.ToArray());
         }
 
         if (items.Count == 0)
@@ -1045,6 +1054,7 @@ public sealed class QueryEngine : IDisposable
         var indices = new List<int>();
         var names = new List<string>();
         var types = new List<ColumnType>();
+        var nullables = new List<bool>();
 
         foreach (var item in items)
         {
@@ -1056,9 +1066,10 @@ public sealed class QueryEngine : IDisposable
             indices.Add(idx);
             names.Add(col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName);
             types.Add(flatTypes[idx]);
+            nullables.Add(flatNullables[idx]);
         }
 
-        return (indices.ToArray(), names.ToArray(), types.ToArray());
+        return (indices.ToArray(), names.ToArray(), types.ToArray(), nullables.ToArray());
     }
 
     private static ColumnType[] BuildFlatTypeArray(IReadOnlyList<(TableInfo Table, int Offset)> context)
@@ -1069,6 +1080,16 @@ public sealed class QueryEngine : IDisposable
             for (var i = 0; i < table.Schema.Columns.Count; i++)
                 flatTypes[offset + i] = table.Schema.Columns[i].Type;
         return flatTypes;
+    }
+
+    private static bool[] BuildFlatNullableArray(IReadOnlyList<(TableInfo Table, int Offset)> context)
+    {
+        var totalCols = context.Sum(e => e.Table.Schema.Columns.Count);
+        var flatNullables = new bool[totalCols];
+        foreach (var (table, offset) in context)
+            for (var i = 0; i < table.Schema.Columns.Count; i++)
+                flatNullables[offset + i] = table.Schema.Columns[i].IsNullable;
+        return flatNullables;
     }
 
     private static bool ValuesEqual(object? left, object? right)
@@ -1219,6 +1240,7 @@ public sealed class QueryEngine : IDisposable
         // Build output column metadata.
         var outNames = new List<string>();
         var outTypes = new List<ColumnType>();
+        var outNullables = new List<bool>();
 
         IReadOnlyList<SelectItem> selectItems = statement.Columns
             ?? table.Schema.Columns
@@ -1231,7 +1253,9 @@ public sealed class QueryEngine : IDisposable
             {
                 case ColumnSelectItem colItem:
                     outNames.Add(colItem.Alias ?? colItem.Column.ColumnName);
-                    outTypes.Add(table.Schema.Columns[table.Schema.GetColumnOrdinal(colItem.Column.ColumnName)].Type);
+                    var colOrdinal = table.Schema.GetColumnOrdinal(colItem.Column.ColumnName);
+                    outTypes.Add(table.Schema.Columns[colOrdinal].Type);
+                    outNullables.Add(table.Schema.Columns[colOrdinal].IsNullable);
                     break;
                 case AggregateSelectItem aggItem:
                     outNames.Add(aggItem.Alias ?? FormatAggregateName(aggItem));
@@ -1244,6 +1268,7 @@ public sealed class QueryEngine : IDisposable
                         outTypes.Add(ColumnType.Float64);
                     else
                         outTypes.Add(ColumnType.Int64);
+                    outNullables.Add(aggItem.Fn != AggregateFn.Count); // COUNT never returns null
                     break;
             }
         }
@@ -1284,7 +1309,7 @@ public sealed class QueryEngine : IDisposable
         }
         resultSeq = ApplyLimitOffset(resultSeq, statement.Limit, statement.Offset);
 
-        return QueryExecutionResult.WithRows(outNames, resultSeq.ToArray(), outTypes);
+        return QueryExecutionResult.WithRows(outNames, resultSeq.ToArray(), outTypes, outNullables);
     }
 
     private static string FormatAggregateName(AggregateSelectItem item) =>
@@ -1422,7 +1447,7 @@ public sealed class QueryEngine : IDisposable
 
         result = ApplyLimitOffset(result, statement.Limit, statement.Offset);
 
-        return QueryExecutionResult.WithRows(left.Columns, result.ToArray(), left.ColumnTypes);
+        return QueryExecutionResult.WithRows(left.Columns, result.ToArray(), left.ColumnTypes, left.ColumnNullables);
     }
 
     private static IEnumerable<object?[]> UnionDistinct(
@@ -1603,6 +1628,9 @@ public sealed class QueryEngine : IDisposable
         var windowResults = new List<object?[]>(windowItems.Count);
         var colNames = baseResult.Columns.Take(effectiveBaseCount).ToList();
         var colTypes = baseResult.ColumnTypes.Take(effectiveBaseCount).ToList();
+        var colNullables = baseResult.ColumnNullables.Count > 0
+            ? baseResult.ColumnNullables.Take(effectiveBaseCount).ToList()
+            : Enumerable.Repeat(true, effectiveBaseCount).ToList();
 
         foreach (var wfItem in windowItems)
         {
@@ -1619,6 +1647,7 @@ public sealed class QueryEngine : IDisposable
             };
             colNames.Add(wfItem.Alias ?? fnName);
             colTypes.Add(ColumnType.Int64);
+            colNullables.Add(true); // LAG/LEAD can return null at partition boundaries
         }
 
         // Assemble final rows: first effectiveBaseCount original columns + window result columns.
@@ -1632,7 +1661,7 @@ public sealed class QueryEngine : IDisposable
             finalRows[i] = dest;
         }
 
-        return QueryExecutionResult.WithRows(colNames, finalRows, colTypes);
+        return QueryExecutionResult.WithRows(colNames, finalRows, colTypes, colNullables);
     }
 
     private static object?[] ComputeWindowFunction(

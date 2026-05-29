@@ -463,6 +463,138 @@ public sealed class SqlityDataReaderTests
     }
 }
 
+public sealed class SqlityDataReaderSchemaTests
+{
+    private static string TempDb() =>
+        Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlity");
+
+    [Fact]
+    public void GetSchemaTable_returns_correct_name_ordinal_and_type()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, name STRING);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT id, name FROM t;";
+            using var reader = cmd.ExecuteReader();
+
+            var schema = reader.GetSchemaTable();
+
+            Assert.NotNull(schema);
+            Assert.Equal(2, schema.Rows.Count);
+
+            Assert.Equal("id",          schema.Rows[0]["ColumnName"]);
+            Assert.Equal(0,             schema.Rows[0]["ColumnOrdinal"]);
+            Assert.Equal(typeof(long),  schema.Rows[0]["DataType"]);
+
+            Assert.Equal("name",         schema.Rows[1]["ColumnName"]);
+            Assert.Equal(1,              schema.Rows[1]["ColumnOrdinal"]);
+            Assert.Equal(typeof(string), schema.Rows[1]["DataType"]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void GetSchemaTable_AllowDBNull_false_for_primary_key_and_not_null_columns()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, val INT64 NOT NULL, opt STRING);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT id, val, opt FROM t;";
+            using var reader = cmd.ExecuteReader();
+
+            var schema = reader.GetSchemaTable();
+
+            Assert.Equal(false, schema!.Rows[0]["AllowDBNull"]); // PRIMARY KEY
+            Assert.Equal(false, schema.Rows[1]["AllowDBNull"]); // NOT NULL
+            Assert.Equal(true,  schema.Rows[2]["AllowDBNull"]); // nullable
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void GetSchemaTable_AllowDBNull_true_for_nullable_column()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, note STRING);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT note FROM t;";
+            using var reader = cmd.ExecuteReader();
+
+            var schema = reader.GetSchemaTable();
+
+            Assert.Equal(true, schema!.Rows[0]["AllowDBNull"]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void GetSchemaTable_works_on_empty_result_set()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, val BOOLEAN NOT NULL);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT id, val FROM t;";
+            using var reader = cmd.ExecuteReader();
+
+            Assert.False(reader.HasRows);
+            var schema = reader.GetSchemaTable();
+
+            Assert.NotNull(schema);
+            Assert.Equal(2, schema.Rows.Count);
+            Assert.Equal("id",        schema.Rows[0]["ColumnName"]);
+            Assert.Equal(typeof(long), schema.Rows[0]["DataType"]);
+            Assert.Equal(false,       schema.Rows[0]["AllowDBNull"]);
+            Assert.Equal(typeof(bool), schema.Rows[1]["DataType"]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void GetSchemaTable_AllowDBNull_true_for_join_nullable_columns()
+    {
+        var path = TempDb();
+        try
+        {
+            using var conn = new SqlityConnection($"Data Source={path}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE a (id INT64 PRIMARY KEY, x STRING);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "CREATE TABLE b (id INT64 PRIMARY KEY, y INT64 NOT NULL);";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT a.id, a.x, b.y FROM a JOIN b ON a.id = b.id;";
+            using var reader = cmd.ExecuteReader();
+
+            var schema = reader.GetSchemaTable();
+
+            Assert.Equal(false, schema!.Rows[0]["AllowDBNull"]); // a.id — PRIMARY KEY
+            Assert.Equal(true,  schema.Rows[1]["AllowDBNull"]); // a.x — nullable
+            Assert.Equal(false, schema.Rows[2]["AllowDBNull"]); // b.y — NOT NULL
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+}
+
 public sealed class SqlityTransactionTests
 {
     [Fact]

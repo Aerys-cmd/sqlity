@@ -89,7 +89,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 - **Async ADO.NET** — implement `OpenAsync`, `ExecuteReaderAsync`, `ExecuteNonQueryAsync`,
   `ExecuteScalarAsync` on all provider types; required for async EF Core paths
-- **`GetSchemaTable`** in `SqlityDataReader` — return column metadata (name, type, ordinal,
+- ✅ **`GetSchemaTable`** in `SqlityDataReader` — return column metadata (name, type, ordinal,
   nullable) so schema-aware consumers work out of the box
 - **`EXPLAIN QUERY PLAN`** statement — parse `EXPLAIN QUERY PLAN SELECT …` and return plan
   description rows (scan vs seek, index used, estimated rows) instead of data rows
