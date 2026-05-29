@@ -30,6 +30,7 @@ internal sealed class SqlParser
             SqlTokenKind.Truncate => ParseTruncate(),
             SqlTokenKind.With => ParseCteStatement(),
             SqlTokenKind.Analyze => ParseAnalyze(),
+            SqlTokenKind.Explain => ParseExplain(),
             _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
@@ -60,6 +61,7 @@ internal sealed class SqlParser
                 SqlTokenKind.Truncate => ParseTruncate(),
                 SqlTokenKind.With => ParseCteStatement(),
                 SqlTokenKind.Analyze => ParseAnalyze(),
+                SqlTokenKind.Explain => ParseExplain(),
                 _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
             };
 
@@ -258,6 +260,23 @@ internal sealed class SqlParser
         if (Peek().Kind == SqlTokenKind.Identifier || IsUnreservedKeyword(Peek().Kind))
             tableName = Advance().Lexeme;
         return new AnalyzeStatement(tableName);
+    }
+
+    private ExplainStatement ParseExplain()
+    {
+        Expect(SqlTokenKind.Explain);
+        Expect(SqlTokenKind.Query);
+        Expect(SqlTokenKind.Plan);
+
+        if (Peek().Kind != SqlTokenKind.Select)
+            throw new InvalidOperationException("EXPLAIN QUERY PLAN requires a SELECT statement.");
+
+        var inner = ParseSelectOrSetOperation();
+
+        if (inner is not SelectStatement select)
+            throw new InvalidOperationException("EXPLAIN QUERY PLAN only supports plain SELECT statements.");
+
+        return new ExplainStatement(select);
     }
 
     /// <summary>
@@ -1191,6 +1210,9 @@ internal sealed record CreateViewStatement(string ViewName, string SelectSql) : 
 /// statistics are collected for every table in the database.
 /// </summary>
 internal sealed record AnalyzeStatement(string? TableName) : SqlStatement;
+
+/// <summary>Returns query plan rows instead of data rows.</summary>
+internal sealed record ExplainStatement(SelectStatement Query) : SqlStatement;
 
 internal sealed record SelectStatement(string TableName, IReadOnlyList<SelectItem>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins, IReadOnlyList<string>? GroupBy, HavingExpression? Having, IReadOnlyList<OrderByTerm>? OrderBy, int? Limit, int? Offset, bool IsDistinct = false) : SqlStatement;
 

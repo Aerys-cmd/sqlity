@@ -2,6 +2,7 @@ using Sqlity.Query.Planner;
 using Sqlity.Storage;
 using Sqlity.Storage.Catalog;
 using Sqlity.Storage.Rows;
+using Sqlity.Storage.Statistics;
 
 namespace Sqlity.Query;
 
@@ -150,6 +151,7 @@ public sealed class QueryEngine : IDisposable
                 AnalyzeStatement analyze => ExecuteAnalyze(analyze),
                 SetOperationStatement setOp => ExecuteSetOperation(setOp),
                 CteStatement cte => ExecuteCte(cte),
+                ExplainStatement explain => ExecuteExplain(explain),
                 _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
             };
 
@@ -273,6 +275,46 @@ public sealed class QueryEngine : IDisposable
             _storage.AnalyzeTable(statement.TableName);
         }
         return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteExplain(ExplainStatement statement)
+    {
+        var select = statement.Query;
+        var fromTable = _storage.GetTable(select.TableName);
+        var stats = _storage.GetStatistics(select.TableName);
+
+        var rows = new List<object?[]>();
+        var id = 1L;
+
+        var plan = _planner.Plan(fromTable, select.Filter, select.OrderBy);
+        rows.Add([id++, DescribePlan(plan, stats)]);
+
+        foreach (var join in select.Joins)
+        {
+            var joinStats = _storage.GetStatistics(join.TableName);
+            var rowCountHint = joinStats is not null ? $" (~{joinStats.RowCount} rows)" : string.Empty;
+            rows.Add([id++, $"SCAN TABLE {join.TableName} (nested loop join){rowCountHint}"]);
+        }
+
+        return QueryExecutionResult.WithRows(
+            ["id", "detail"],
+            rows,
+            [ColumnType.Int64, ColumnType.String]);
+    }
+
+    private static string DescribePlan(PhysicalPlan plan, TableStatistics? stats)
+    {
+        var rowCountHint = stats is not null ? $" (~{stats.RowCount} rows)" : string.Empty;
+        return plan switch
+        {
+            PhysicalFullScan scan =>
+                $"SCAN TABLE {scan.Table.TableName}{rowCountHint}",
+            PhysicalIndexSeek seek =>
+                $"SEARCH TABLE {seek.Table.TableName} USING INDEX {seek.Index.IndexName}{rowCountHint}",
+            PhysicalIndexOrderedScan ordered =>
+                $"SCAN TABLE {ordered.Table.TableName} USING INDEX {ordered.Index.IndexName} ORDER BY{rowCountHint}",
+            _ => $"UNKNOWN {plan.GetType().Name}"
+        };
     }
 
     private QueryExecutionResult ExecuteCreateView(CreateViewStatement statement)

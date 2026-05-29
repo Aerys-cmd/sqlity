@@ -95,7 +95,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - ✅ **`GetSchemaTable`** in `SqlityDataReader` — return column metadata (name, type, ordinal,
   nullable) so schema-aware consumers work out of the box
 - **`EXPLAIN QUERY PLAN`** statement — parse `EXPLAIN QUERY PLAN SELECT …` and return plan
-  description rows (scan vs seek, index used, estimated rows) instead of data rows
+  description rows (scan vs seek, index used, estimated rows) instead of data rows ✅
 - **Error messages with source position** — track line and column in `SqlTokenizer`; include
   position in all parse and bind errors so diagnostics are actionable
 - **Interactive CLI REPL** — when no SQL argument is provided, start a read-eval-print loop

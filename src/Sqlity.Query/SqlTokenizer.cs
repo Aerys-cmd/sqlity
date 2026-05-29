@@ -184,6 +184,9 @@ internal static class SqlTokenizer
             "LAG" => SqlTokenKind.Lag,
             "LEAD" => SqlTokenKind.Lead,
             "ANALYZE" => SqlTokenKind.Analyze,
+            "EXPLAIN" => SqlTokenKind.Explain,
+            "QUERY" => SqlTokenKind.Query,
+            "PLAN" => SqlTokenKind.Plan,
             _ => SqlTokenKind.Identifier
         };
 
@@ -406,4 +409,7 @@ internal enum SqlTokenKind
     Lag = 107,
     Lead = 108,
     Analyze = 109,
+    Explain = 110,
+    Query = 111,
+    Plan = 112,
 }
