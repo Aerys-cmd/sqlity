@@ -250,4 +250,46 @@ public sealed class StorageEngineTests
             }
         }
     }
+
+    [Fact]
+    public void StorageEngine_memory_mode_supports_full_crud_without_file_io()
+    {
+        using var storage = StorageEngine.Open(":memory:");
+
+        storage.CreateTable(new TableSchema(
+            "items",
+            new[]
+            {
+                new ColumnDefinition("id", ColumnType.Int64),
+                new ColumnDefinition("name", ColumnType.String)
+            },
+            primaryKeyOrdinal: 0));
+
+        storage.Insert("items", new object?[] { 1L, "Alice" });
+        storage.Insert("items", new object?[] { 2L, "Bob" });
+
+        var rows = storage.ReadAll("items");
+        Assert.Equal(2, rows.Count);
+
+        storage.Update("items", 1L, new object?[] { 1L, "Alice Updated" });
+        Assert.True(storage.TryReadByPrimaryKey("items", 1L, out var updated));
+        Assert.Equal("Alice Updated", updated![1]);
+
+        storage.Delete("items", 2L);
+        Assert.False(storage.TryReadByPrimaryKey("items", 2L, out _));
+    }
+
+    [Fact]
+    public void StorageEngine_memory_mode_is_case_insensitive()
+    {
+        using var storage = StorageEngine.Open(":MEMORY:");
+
+        storage.CreateTable(new TableSchema(
+            "t",
+            new[] { new ColumnDefinition("id", ColumnType.Int64) },
+            primaryKeyOrdinal: 0));
+
+        storage.Insert("t", new object?[] { 42L });
+        Assert.True(storage.TryReadByPrimaryKey("t", 42L, out _));
+    }
 }

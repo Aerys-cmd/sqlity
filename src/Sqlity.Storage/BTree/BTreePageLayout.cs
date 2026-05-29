@@ -8,6 +8,9 @@ public static class BTreePageLayout
     public const int LeafCellHeaderSize = sizeof(long) + sizeof(ushort);
     public const int InternalCellSize = sizeof(long) + sizeof(uint);
 
+    /// <summary>Byte length of the overflow pointer stored in a leaf overflow-pointer cell's payload field.</summary>
+    public const int OverflowPointerPayloadSize = sizeof(uint) + sizeof(uint); // totalSize + firstPageId
+
     public static int GetPointerArrayOffset() => PageHeader.Size;
 
     public static int GetCellPointerOffset(ushort slotIndex) =>

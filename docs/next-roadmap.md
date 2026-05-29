@@ -26,6 +26,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - `DEFAULT expr`, `AUTOINCREMENT` / `SERIAL`, inline `UNIQUE`, `INSERT OR REPLACE`, `INSERT INTO t SELECT`, `CREATE VIEW`, `TRUNCATE TABLE` ✅
 - Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR` ✅
 - `CASE WHEN … THEN … END` expressions, `EXISTS` / `NOT EXISTS`, `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`, CTEs (`WITH … AS`), window functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`) ✅
+- In-memory mode, buffer pool (LRU), overflow pages, Write-Ahead Logging (`useWal: true`) ✅
 
 ---
 
@@ -73,21 +74,13 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 ## Phase 4 — Storage engine hardening
 
-Each item here teaches a concrete internals concept:
+✅ **Complete.** All items implemented and shipped.
 
-- **Buffer pool with LRU eviction** — wrap `IPager` with a fixed-capacity in-memory page cache;
-  dirty pages flushed on eviction or commit; demonstrates the buffer-pool design used by every
-  real database
-- **Overflow pages for large rows** — detect rows exceeding page capacity, chain overflow pages,
-  update B-tree insert / read / delete paths; lifts the current hard per-row size limit
-- **Write-Ahead Logging (WAL)** — implement WAL as an alternative to the rollback journal;
-  readers see a consistent snapshot while a writer appends; demonstrates why SQLite and PostgreSQL
-  converge on WAL for concurrent workloads
-- **In-memory mode** — detect `":memory:"` as the file path and substitute `InMemoryPager`
-  (already used in benchmarks) so no file I/O occurs; useful for tests and embedded scenarios
-- **Cost-based query planner** — collect per-table row counts and per-column distinct-value
-  estimates; replace the current rule-based index selection with cardinality-driven cost estimates;
-  demonstrates how statistics drive real query optimisers
+- **In-memory mode** — `StorageEngine.Open(":memory:")` uses `InMemoryPager`; no file I/O; useful for tests and embedded scenarios ✅
+- **Buffer pool with LRU eviction** — `BufferedPager` wraps any `IPager` with a capacity-bounded LRU cache; dirty pages flushed on eviction or commit ✅
+- **Overflow pages for large rows** — rows exceeding page capacity spill across chained overflow pages; B-tree insert / read / delete paths updated; hard per-row size limit lifted ✅
+- **Write-Ahead Logging (WAL)** — `WalPager` implements WAL as an alternative durability mode; atomic two-phase commit (uncommitted marker → frames → committed marker); crash recovery replays committed WAL on reopen; opt-in via `StorageEngine.Open(path, useWal: true)` ✅
+- **Cost-based query planner** — collect per-table row counts and per-column distinct-value estimates; replace the current rule-based index selection with cardinality-driven cost estimates; demonstrates how statistics drive real query optimisers
 
 ---
 

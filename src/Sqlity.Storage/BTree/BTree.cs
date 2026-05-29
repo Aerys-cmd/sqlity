@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Sqlity.Core;
 using Sqlity.Storage.Abstractions;
 using Sqlity.Storage.Pages;
@@ -19,6 +20,12 @@ internal sealed class BPlusTree
     private static readonly int MaxLeafCellBytes =
         DbConstants.PageSize - PageHeader.Size - BTreePageLayout.CellPointerSize;
 
+    // Maximum payload bytes that can be stored inline (without overflow) for a minimal cell
+    // containing just the key and payload (header + payload, no cell-pointer overhead here
+    // because the pointer list grows from the opposite end of the page).
+    private static readonly int InlinePayloadCapacity =
+        MaxLeafCellBytes - BTreePageLayout.LeafCellHeaderSize;
+
     public BPlusTree(IPager pager, uint rootPageId)
     {
         ArgumentNullException.ThrowIfNull(pager);
@@ -30,19 +37,36 @@ internal sealed class BPlusTree
 
     public void Insert(TableLeafCell cell)
     {
+        // Rows that exceed the usable leaf space are spilled to chained overflow pages;
+        // only an 18-byte pointer cell is stored on the leaf page itself.
         if (cell.GetRequiredSize() > MaxLeafCellBytes)
         {
-            throw new InvalidOperationException(
-                $"Row payload ({cell.GetRequiredSize()} bytes) is too large to fit on a single page.");
+            var firstOverflowPageId = SpillToOverflow(cell.Payload);
+            var pointerCell = BuildOverflowPointerCell(cell.PrimaryKey, cell.Payload.Length, firstOverflowPageId);
+            try
+            {
+                InsertCell(pointerCell);
+            }
+            catch
+            {
+                // If the insert failed, release the already-allocated overflow pages so they
+                // don't become orphaned.
+                ReleaseOverflowChain(firstOverflowPageId, cell.Payload.Length);
+                throw;
+            }
+            return;
         }
 
+        InsertCell(cell);
+    }
+
+    private void InsertCell(TableLeafCell cell)
+    {
         var (leaf, leafPageId, ancestors) = FindLeaf(cell.PrimaryKey);
         var status = leaf.TryInsert(cell);
 
         if (status == TableLeafInsertStatus.DuplicateKey)
-        {
             throw new InvalidOperationException($"Duplicate primary key {cell.PrimaryKey}.");
-        }
 
         if (status == TableLeafInsertStatus.Success)
         {
@@ -56,58 +80,114 @@ internal sealed class BPlusTree
     public void Delete(long primaryKey)
     {
         var (leaf, leafPageId, ancestors) = FindLeaf(primaryKey);
+
+        // If the stored cell is an overflow pointer, release the overflow chain before
+        // removing the pointer cell so pages are always reclaimed even if an exception occurs.
+        if (leaf.TryGetCell(primaryKey, out var existingCell) && existingCell.IsOverflowPointer)
+        {
+            var (totalSize, firstPageId) = ReadOverflowPointer(existingCell);
+            ReleaseOverflowChain(firstPageId, totalSize);
+        }
+
         var status = leaf.TryDelete(primaryKey);
 
         if (status == TableLeafDeleteStatus.NotFound)
-        {
             throw new InvalidOperationException($"Primary key {primaryKey} not found.");
-        }
 
         _pager.WritePage(leaf.Page);
 
         if (leaf.CellCount == 0 && ancestors.Count > 0)
-        {
             ReclaimEmptyLeaf(leafPageId, leaf, ancestors);
-        }
     }
 
     public bool TryGet(long primaryKey, out TableLeafCell cell)
     {
         var (leaf, _, _) = FindLeaf(primaryKey);
-        return leaf.TryGetCell(primaryKey, out cell);
+        if (!leaf.TryGetCell(primaryKey, out var raw))
+        {
+            cell = default;
+            return false;
+        }
+        cell = MaterializeCell(raw);
+        return true;
     }
 
     public void Update(TableLeafCell cell)
     {
-        var (leaf, _, _) = FindLeaf(cell.PrimaryKey);
-        var status = leaf.TryUpdate(cell);
+        var (leaf, leafPageId, ancestors) = FindLeaf(cell.PrimaryKey);
 
-        if (status == TableLeafUpdateStatus.NotFound)
-        {
+        if (!leaf.TryGetCell(cell.PrimaryKey, out var existing))
             throw new InvalidOperationException($"Primary key {cell.PrimaryKey} not found.");
-        }
 
-        if (status == TableLeafUpdateStatus.Success)
+        bool newNeedsOverflow = cell.Payload.Length > InlinePayloadCapacity;
+        bool oldWasOverflow = existing.IsOverflowPointer;
+
+        if (!newNeedsOverflow && !oldWasOverflow)
         {
+            // Inline → Inline: attempt in-place update; fall back to delete+insert if the
+            // new payload doesn't fit in the space already occupied by the old cell.
+            var status = leaf.TryUpdate(cell);
+            if (status == TableLeafUpdateStatus.Success)
+            {
+                _pager.WritePage(leaf.Page);
+                return;
+            }
+
+            // InsufficientSpace: delete old then re-insert (may trigger a leaf split).
+            leaf.TryDelete(cell.PrimaryKey);
             _pager.WritePage(leaf.Page);
+            InsertCell(cell);
             return;
         }
 
-        // InsufficientSpace: verify the new payload can fit before deleting the old row.
-        if (cell.GetRequiredSize() > MaxLeafCellBytes)
+        if (newNeedsOverflow && oldWasOverflow)
         {
-            throw new InvalidOperationException(
-                $"Row payload ({cell.GetRequiredSize()} bytes) is too large to fit on a single page.");
+            // Overflow → Overflow: allocate new chain first, then overwrite pointer in-place,
+            // then free old chain. This keeps the leaf consistent even if free-chain updates fail.
+            var (oldTotal, oldFirstPageId) = ReadOverflowPointer(existing);
+            var newFirstPageId = SpillToOverflow(cell.Payload);
+            var newPointerCell = BuildOverflowPointerCell(cell.PrimaryKey, cell.Payload.Length, newFirstPageId);
+
+            // Overwrite the 18-byte pointer cell in-place; it is always the same size.
+            var updateStatus = leaf.TryUpdate(newPointerCell);
+            if (updateStatus != TableLeafUpdateStatus.Success)
+                throw new InvalidOperationException($"Overflow pointer update failed for key {cell.PrimaryKey}: {updateStatus}.");
+
+            _pager.WritePage(leaf.Page);
+            ReleaseOverflowChain(oldFirstPageId, oldTotal);
+            return;
         }
 
-        var deleteStatus = leaf.TryDelete(cell.PrimaryKey);
-        if (deleteStatus != TableLeafDeleteStatus.Success)
+        if (newNeedsOverflow && !oldWasOverflow)
         {
-            throw new InvalidOperationException($"Primary key {cell.PrimaryKey} not found during update.");
+            // Inline → Overflow
+            var firstOverflowPageId = SpillToOverflow(cell.Payload);
+            var pointerCell = BuildOverflowPointerCell(cell.PrimaryKey, cell.Payload.Length, firstOverflowPageId);
+            try
+            {
+                leaf.TryDelete(cell.PrimaryKey);
+                _pager.WritePage(leaf.Page);
+                InsertCell(pointerCell);
+            }
+            catch
+            {
+                ReleaseOverflowChain(firstOverflowPageId, cell.Payload.Length);
+                throw;
+            }
+            return;
         }
 
-        _pager.WritePage(leaf.Page);
-        Insert(cell);
+        // Overflow → Inline: delete pointer cell, insert new inline cell, THEN release old
+        // chain. Releasing after a successful insert ensures overflow pages are not orphaned
+        // if InsertCell throws (e.g. during a leaf split). The caller's transaction rollback
+        // will restore the leaf page in that case.
+        {
+            var (oldTotal, oldFirstPageId) = ReadOverflowPointer(existing);
+            leaf.TryDelete(cell.PrimaryKey);
+            _pager.WritePage(leaf.Page);
+            InsertCell(cell);
+            ReleaseOverflowChain(oldFirstPageId, oldTotal);
+        }
     }
 
     /// <summary>
@@ -123,7 +203,8 @@ internal sealed class BPlusTree
         while (currentPageId != 0)
         {
             var leaf = new TableLeafPage(_pager.ReadPage(currentPageId));
-            results.AddRange(leaf.ReadAllCells());
+            foreach (var raw in leaf.ReadAllCells())
+                results.Add(MaterializeCell(raw));
             currentPageId = leaf.NextLeafPageId;
         }
 
@@ -366,7 +447,17 @@ internal sealed class BPlusTree
             }
             else if (pageType == PageType.TableLeaf)
             {
-                var next = new TableLeafPage(page).NextLeafPageId;
+                var leafPage = new TableLeafPage(page);
+                // Walk overflow chains for any overflow-pointer cells before releasing the leaf.
+                foreach (var cell in leafPage.ReadAllCells())
+                {
+                    if (cell.IsOverflowPointer)
+                    {
+                        var (totalSize, firstOverflowPageId) = ReadOverflowPointer(cell);
+                        ReleaseOverflowChain(firstOverflowPageId, totalSize);
+                    }
+                }
+                var next = leafPage.NextLeafPageId;
                 if (next != 0)
                     toVisit.Push(next);
             }
@@ -476,5 +567,127 @@ internal sealed class BPlusTree
             throw new InvalidOperationException(
                 $"Failed to insert divider key {key} into internal page during split: {status}.");
         }
+    }
+
+    // ── Overflow helpers ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Writes <paramref name="payload"/> across one or more freshly allocated overflow pages
+    /// and returns the page ID of the first page in the chain.
+    /// </summary>
+    private uint SpillToOverflow(byte[] payload)
+    {
+        var capacity = OverflowPage.DataCapacity;
+        int pageCount = (payload.Length + capacity - 1) / capacity;
+
+        // Allocate all pages up-front so partial failures don't leave the pager in an
+        // inconsistent state (a later write failure will still surface as an exception
+        // but the pages will be properly linked).
+        var pageIds = new uint[pageCount];
+        for (int i = 0; i < pageCount; i++)
+            pageIds[i] = _pager.AllocatePage(PageType.Overflow);
+
+        for (int i = 0; i < pageCount; i++)
+        {
+            var pageBuffer = _pager.ReadPage(pageIds[i]);
+            int offset = i * capacity;
+            int length = Math.Min(capacity, payload.Length - offset);
+            payload.AsSpan(offset, length).CopyTo(OverflowPage.DataSpan(pageBuffer));
+            OverflowPage.SetNextPageId(pageBuffer, i + 1 < pageCount ? pageIds[i + 1] : 0u);
+            _pager.WritePage(pageBuffer);
+        }
+
+        return pageIds[0];
+    }
+
+    /// <summary>
+    /// Reads the payload stored across the overflow chain starting at <paramref name="firstPageId"/>.
+    /// </summary>
+    private byte[] ReadFromOverflow(uint firstPageId, int totalSize)
+    {
+        var result = new byte[totalSize];
+        int written = 0;
+        var currentPageId = firstPageId;
+        int capacity = OverflowPage.DataCapacity;
+        int maxPages = (totalSize + capacity - 1) / capacity;
+        int visitedPages = 0;
+
+        while (currentPageId != 0)
+        {
+            if (++visitedPages > maxPages)
+                throw new InvalidOperationException("Overflow chain is longer than expected; possible corruption.");
+
+            var page = _pager.ReadPage(currentPageId);
+
+            if (page.ReadHeader().PageType != PageType.Overflow)
+                throw new InvalidOperationException($"Page {currentPageId} is not an overflow page; possible corruption.");
+
+            int toCopy = Math.Min(capacity, totalSize - written);
+            OverflowPage.DataReadOnlySpan(page)[..toCopy].CopyTo(result.AsSpan(written));
+            written += toCopy;
+            currentPageId = OverflowPage.ReadNextPageId(page);
+        }
+
+        if (written != totalSize)
+            throw new InvalidOperationException($"Overflow chain returned {written} bytes but {totalSize} were expected; possible corruption.");
+
+        return result;
+    }
+
+    /// <summary>
+    /// Walks and releases every page in an overflow chain back to the free list.
+    /// </summary>
+    private void ReleaseOverflowChain(uint firstPageId, int totalSize)
+    {
+        var currentPageId = firstPageId;
+        int capacity = OverflowPage.DataCapacity;
+        int maxPages = (totalSize + capacity - 1) / capacity;
+        int visited = 0;
+
+        while (currentPageId != 0)
+        {
+            if (++visited > maxPages)
+                break; // Avoid runaway loop on corrupt chains.
+
+            var page = _pager.ReadPage(currentPageId);
+            var nextPageId = OverflowPage.ReadNextPageId(page);
+            _pager.ReleasePage(currentPageId);
+            currentPageId = nextPageId;
+        }
+    }
+
+    /// <summary>
+    /// Decodes the 8-byte payload of an overflow pointer cell into (totalSize, firstPageId).
+    /// </summary>
+    private static (int TotalSize, uint FirstPageId) ReadOverflowPointer(TableLeafCell pointerCell)
+    {
+        var totalSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(pointerCell.Payload[..sizeof(uint)]);
+        var firstPageId = BinaryPrimitives.ReadUInt32LittleEndian(pointerCell.Payload[sizeof(uint)..]);
+        return (totalSize, firstPageId);
+    }
+
+    /// <summary>
+    /// Builds an overflow pointer cell with the given key, total payload size, and first
+    /// overflow page ID.
+    /// </summary>
+    private static TableLeafCell BuildOverflowPointerCell(long primaryKey, int totalSize, uint firstPageId)
+    {
+        var payload = new byte[BTreePageLayout.OverflowPointerPayloadSize];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(0, sizeof(uint)), (uint)totalSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(sizeof(uint), sizeof(uint)), firstPageId);
+        return new TableLeafCell(primaryKey, payload) { IsOverflowPointer = true };
+    }
+
+    /// <summary>
+    /// If <paramref name="raw"/> is an overflow pointer cell, reads and returns the full
+    /// payload from the overflow chain. Otherwise returns the cell unchanged.
+    /// </summary>
+    private TableLeafCell MaterializeCell(TableLeafCell raw)
+    {
+        if (!raw.IsOverflowPointer)
+            return raw;
+
+        var (totalSize, firstPageId) = ReadOverflowPointer(raw);
+        return new TableLeafCell(raw.PrimaryKey, ReadFromOverflow(firstPageId, totalSize));
     }
 }
