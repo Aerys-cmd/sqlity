@@ -33,9 +33,33 @@ public sealed class SqlityDataReader : DbDataReader
         return _rowIndex < _result.Rows.Count;
     }
 
+    public override Task<bool> ReadAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(Read());
+    }
+
     public override bool NextResult() => false;
 
+    public override Task<bool> NextResultAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(NextResult());
+    }
+
     public override void Close() => _isClosed = true;
+
+    public override Task CloseAsync()
+    {
+        Close();
+        return Task.CompletedTask;
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        await CloseAsync().ConfigureAwait(false);
+        GC.SuppressFinalize(this);
+    }
 
     public override string GetName(int ordinal) => _result.Columns[ordinal];
 

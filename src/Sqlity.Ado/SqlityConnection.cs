@@ -47,6 +47,19 @@ public sealed class SqlityConnection : DbConnection
         }
     }
 
+    public override Task OpenAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Open();
+        return Task.CompletedTask;
+    }
+
+    public override Task CloseAsync()
+    {
+        Close();
+        return Task.CompletedTask;
+    }
+
     public override void Close()
     {
         // Roll back any active transaction before closing so the database file is left consistent.

@@ -40,6 +40,12 @@ public sealed class SqlityCommand : DbCommand
         return GetEngine().Execute(ApplyParameters(CommandText)).RowsAffected;
     }
 
+    public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ExecuteNonQuery());
+    }
+
     public override object? ExecuteScalar()
     {
         EnsureConnectionOpen();
@@ -49,11 +55,23 @@ public sealed class SqlityCommand : DbCommand
         return result.Rows[0][0];
     }
 
+    public override Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ExecuteScalar());
+    }
+
     protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
     {
         EnsureConnectionOpen();
         var result = GetEngine().Execute(ApplyParameters(CommandText));
         return new SqlityDataReader(result);
+    }
+
+    protected override Task<DbDataReader> ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ExecuteDbDataReader(behavior));
     }
 
     // Substitutes named parameters (@name) with their SQL literal equivalents so the

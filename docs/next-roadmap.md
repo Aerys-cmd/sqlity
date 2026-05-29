@@ -87,8 +87,11 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 ## Phase 5 — Provider and developer experience
 
-- **Async ADO.NET** — implement `OpenAsync`, `ExecuteReaderAsync`, `ExecuteNonQueryAsync`,
-  `ExecuteScalarAsync` on all provider types; required for async EF Core paths
+- ✅ **Async ADO.NET** — `OpenAsync`, `CloseAsync`, `ExecuteNonQueryAsync`, `ExecuteScalarAsync`,
+  `ExecuteReaderAsync` on `SqlityConnection` and `SqlityCommand`; `ReadAsync`, `NextResultAsync`,
+  `CloseAsync`, `DisposeAsync` on `SqlityDataReader`; all return synchronous completions
+  (`Task.FromResult` / `Task.CompletedTask`) — correct for an embedded synchronous engine, same
+  strategy used by `Microsoft.Data.Sqlite` ✅
 - ✅ **`GetSchemaTable`** in `SqlityDataReader` — return column metadata (name, type, ordinal,
   nullable) so schema-aware consumers work out of the box
 - **`EXPLAIN QUERY PLAN`** statement — parse `EXPLAIN QUERY PLAN SELECT …` and return plan

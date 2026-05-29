@@ -642,3 +642,141 @@ public sealed class SqlityTransactionTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 }
+
+public sealed class SqlityAsyncTests
+{
+    private static string TempDb() =>
+        Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.sqlity");
+
+    [Fact]
+    public async Task OpenAsync_opens_connection()
+    {
+        var path = TempDb();
+        try
+        {
+            await using var conn = new SqlityConnection($"Data Source={path}");
+            await conn.OpenAsync();
+            Assert.Equal(ConnectionState.Open, conn.State);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task CloseAsync_closes_connection()
+    {
+        var path = TempDb();
+        try
+        {
+            await using var conn = new SqlityConnection($"Data Source={path}");
+            await conn.OpenAsync();
+            await conn.CloseAsync();
+            Assert.Equal(ConnectionState.Closed, conn.State);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task ExecuteNonQueryAsync_executes_ddl_and_returns_rows_affected()
+    {
+        var path = TempDb();
+        try
+        {
+            await using var conn = new SqlityConnection($"Data Source={path}");
+            await conn.OpenAsync();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, val STRING);";
+            var rows = await cmd.ExecuteNonQueryAsync();
+            Assert.Equal(0, rows);
+
+            cmd.CommandText = "INSERT INTO t VALUES (1, 'hello');";
+            rows = await cmd.ExecuteNonQueryAsync();
+            Assert.Equal(1, rows);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task ExecuteScalarAsync_returns_first_cell()
+    {
+        var path = TempDb();
+        try
+        {
+            await using var conn = new SqlityConnection($"Data Source={path}");
+            await conn.OpenAsync();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, val INT64);";
+            await cmd.ExecuteNonQueryAsync();
+            cmd.CommandText = "INSERT INTO t VALUES (1, 42);";
+            await cmd.ExecuteNonQueryAsync();
+
+            cmd.CommandText = "SELECT val FROM t WHERE id = 1;";
+            var result = await cmd.ExecuteScalarAsync();
+            Assert.Equal(42L, result);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task ExecuteReaderAsync_and_ReadAsync_iterate_rows()
+    {
+        var path = TempDb();
+        try
+        {
+            await using var conn = new SqlityConnection($"Data Source={path}");
+            await conn.OpenAsync();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY, name STRING);";
+            await cmd.ExecuteNonQueryAsync();
+            cmd.CommandText = "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');";
+            await cmd.ExecuteNonQueryAsync();
+
+            cmd.CommandText = "SELECT id, name FROM t ORDER BY id;";
+            await using var reader = await cmd.ExecuteReaderAsync();
+
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(1L, reader.GetInt64(0));
+            Assert.Equal("Alice", reader.GetString(1));
+
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(2L, reader.GetInt64(0));
+            Assert.Equal("Bob", reader.GetString(1));
+
+            Assert.False(await reader.ReadAsync());
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task NextResultAsync_returns_false()
+    {
+        var path = TempDb();
+        try
+        {
+            await using var conn = new SqlityConnection($"Data Source={path}");
+            await conn.OpenAsync();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE t (id INT64 PRIMARY KEY); INSERT INTO t VALUES (1);";
+            await cmd.ExecuteNonQueryAsync();
+            cmd.CommandText = "SELECT id FROM t;";
+            await using var reader = await cmd.ExecuteReaderAsync();
+            Assert.False(await reader.NextResultAsync());
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task CancellationToken_cancelled_before_call_throws_OperationCanceledException()
+    {
+        var path = TempDb();
+        try
+        {
+            await using var conn = new SqlityConnection($"Data Source={path}");
+            var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => conn.OpenAsync(cts.Token));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+}
