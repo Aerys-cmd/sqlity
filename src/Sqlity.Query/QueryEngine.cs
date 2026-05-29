@@ -144,6 +144,8 @@ public sealed class QueryEngine : IDisposable
                 AlterTableRenameColumnStatement alterRenameCol => ExecuteAlterTableRenameColumn(alterRenameCol),
                 TruncateTableStatement truncate => ExecuteTruncateTable(truncate),
                 CreateViewStatement createView => ExecuteCreateView(createView),
+                SetOperationStatement setOp => ExecuteSetOperation(setOp),
+                CteStatement cte => ExecuteCte(cte),
                 _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
             };
 
@@ -357,46 +359,96 @@ public sealed class QueryEngine : IDisposable
 
         var fromTable = _storage.GetTable(statement.TableName);
 
-        // Aggregate queries are handled via a separate path.
-        var hasAggregates = statement.Columns is not null &&
-                            statement.Columns.Any(c => c is AggregateSelectItem);
-        if (hasAggregates || statement.GroupBy is { Count: > 0 })
-            return ExecuteSelectWithAggregation(fromTable, statement);
+        // Separate window function items from regular SELECT items.
+        List<WindowFunctionSelectItem>? windowItems = null;
+        // Number of original (non-aux) columns in the base projection; -1 means "use all" (SELECT *).
+        int windowBaseColCount = -1;
+        SelectStatement stmtForBase = statement;
+        if (statement.Columns is not null && statement.Columns.Any(c => c is WindowFunctionSelectItem))
+        {
+            windowItems = statement.Columns.OfType<WindowFunctionSelectItem>().ToList();
+            var nonWindowItems = statement.Columns.Where(c => c is not WindowFunctionSelectItem).ToList();
+            if (nonWindowItems.Count > 0)
+            {
+                // Collect column names already present in the non-window SELECT list.
+                var existingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in nonWindowItems)
+                    if (item is ColumnSelectItem csi) existingNames.Add(csi.Column.ColumnName);
 
-        if (statement.Joins.Count == 0)
+                // Collect all column names referenced inside window OVER clauses.
+                var windowRefNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var wf in windowItems)
+                {
+                    foreach (var col in wf.Spec.PartitionBy) windowRefNames.Add(col.ColumnName);
+                    foreach (var ord in wf.Spec.OrderBy) windowRefNames.Add(ord.Column.ColumnName);
+                    if (wf.Args.Count > 0 && wf.Args[0] is ColumnScalarExpr ceArg)
+                        windowRefNames.Add(ceArg.Column.ColumnName);
+                }
+
+                // Append missing columns as auxiliary items so the base query projects them.
+                var auxItems = windowRefNames
+                    .Where(n => !existingNames.Contains(n))
+                    .Select(n => (SelectItem)new ColumnSelectItem(new ColumnReference(null, n)))
+                    .ToList();
+
+                windowBaseColCount = nonWindowItems.Count; // aux cols start after this index
+                stmtForBase = statement with { Columns = nonWindowItems.Concat(auxItems).ToList() };
+            }
+            else
+            {
+                // Only window functions in SELECT → SELECT * for base (all cols available, no stripping needed).
+                stmtForBase = statement with { Columns = null };
+            }
+        }
+
+        // Aggregate queries are handled via a separate path.
+        var hasAggregates = stmtForBase.Columns is not null &&
+                            stmtForBase.Columns.Any(c => c is AggregateSelectItem);
+        if (hasAggregates || stmtForBase.GroupBy is { Count: > 0 })
+            return ExecuteSelectWithAggregation(fromTable, stmtForBase);
+
+        QueryExecutionResult baseResult;
+
+        if (stmtForBase.Joins.Count == 0)
         {
             // Route through the query planner (now ORDER BY-aware).
-            var plan = _planner.Plan(fromTable, statement.Filter, statement.OrderBy);
+            var plan = _planner.Plan(fromTable, stmtForBase.Filter, stmtForBase.OrderBy);
             var rows = _executor.Execute(plan);
 
             // Determine whether the plan already delivered ordered rows.
             var alreadyOrdered = plan is PhysicalIndexOrderedScan;
 
             IEnumerable<object?[]> rowSeq = rows;
-            if (statement.OrderBy is { Count: > 0 } && !alreadyOrdered)
+            if (stmtForBase.OrderBy is { Count: > 0 } && !alreadyOrdered)
             {
-                rowSeq = ApplyOrderBy(rows, statement.OrderBy,
+                rowSeq = ApplyOrderBy(rows, stmtForBase.OrderBy,
                     new[] { (Table: fromTable, Offset: 0) });
             }
 
             var (projectors, projectedColumns, projectedColumnTypes) =
-                BindSingleTableSelectItems(fromTable, statement.Columns);
+                BindSingleTableSelectItems(fromTable, stmtForBase.Columns);
 
             var projectedRows = rowSeq
                 .Select(row => projectors.Select(p => p(row)).ToArray())
                 .ToArray();
 
-            if (statement.IsDistinct)
+            if (stmtForBase.IsDistinct)
                 projectedRows = ApplyDistinct(projectedRows);
 
-            projectedRows = ApplyLimitOffset(projectedRows, statement.Limit, statement.Offset).ToArray();
+            projectedRows = ApplyLimitOffset(projectedRows, stmtForBase.Limit, stmtForBase.Offset).ToArray();
 
-            return QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
+            baseResult = QueryExecutionResult.WithRows(projectedColumns, projectedRows, projectedColumnTypes);
+        }
+        else
+        {
+            baseResult = ExecuteSelectWithJoins(fromTable, stmtForBase);
         }
 
-        return ExecuteSelectWithJoins(fromTable, statement);
-    }
+        if (windowItems is { Count: > 0 })
+            baseResult = ApplyWindowFunctions(baseResult, windowItems, windowBaseColCount);
 
+        return baseResult;
+    }
     private QueryExecutionResult ExecuteSelectWithJoins(TableInfo fromTable, SelectStatement statement)
     {
         var context = BuildJoinContext(fromTable, statement.Joins);
@@ -1324,6 +1376,406 @@ public sealed class QueryEngine : IDisposable
         }
         return result.ToArray();
     }
+
+    // ── SET OPERATIONS (UNION / UNION ALL / INTERSECT / EXCEPT) ──────────────
+
+    private QueryExecutionResult ExecuteSetOperation(SetOperationStatement statement)
+    {
+        var left = ExecuteDmlInternal(statement.Left);
+        var right = ExecuteDmlInternal(statement.Right);
+
+        if (left.Columns.Count != right.Columns.Count)
+            throw new InvalidOperationException(
+                $"Set operation requires both sides to have the same number of columns " +
+                $"(left has {left.Columns.Count}, right has {right.Columns.Count}).");
+
+        IEnumerable<object?[]> result = statement.Op switch
+        {
+            SetOp.UnionAll => left.Rows.Concat(right.Rows),
+            SetOp.UnionDistinct => UnionDistinct(left.Rows, right.Rows),
+            SetOp.Intersect => Intersect(left.Rows, right.Rows),
+            SetOp.Except => Except(left.Rows, right.Rows),
+            _ => throw new InvalidOperationException($"Unknown set operator {statement.Op}.")
+        };
+
+        if (statement.OrderBy is { Count: > 0 })
+            result = ApplyOrderByOnResult(result, statement.OrderBy, left.Columns);
+
+        result = ApplyLimitOffset(result, statement.Limit, statement.Offset);
+
+        return QueryExecutionResult.WithRows(left.Columns, result.ToArray(), left.ColumnTypes);
+    }
+
+    private static IEnumerable<object?[]> UnionDistinct(
+        IReadOnlyList<object?[]> left,
+        IReadOnlyList<object?[]> right)
+    {
+        var seen = new HashSet<GroupKey>();
+        foreach (var row in left)
+            if (seen.Add(new GroupKey(row)))
+                yield return row;
+        foreach (var row in right)
+            if (seen.Add(new GroupKey(row)))
+                yield return row;
+    }
+
+    private static IEnumerable<object?[]> Intersect(
+        IReadOnlyList<object?[]> left,
+        IReadOnlyList<object?[]> right)
+    {
+        var rightSet = new HashSet<GroupKey>(right.Select(r => new GroupKey(r)));
+        var seen = new HashSet<GroupKey>();
+        foreach (var row in left)
+        {
+            var key = new GroupKey(row);
+            if (rightSet.Contains(key) && seen.Add(key))
+                yield return row;
+        }
+    }
+
+    private static IEnumerable<object?[]> Except(
+        IReadOnlyList<object?[]> left,
+        IReadOnlyList<object?[]> right)
+    {
+        var rightSet = new HashSet<GroupKey>(right.Select(r => new GroupKey(r)));
+        var seen = new HashSet<GroupKey>();
+        foreach (var row in left)
+        {
+            var key = new GroupKey(row);
+            if (!rightSet.Contains(key) && seen.Add(key))
+                yield return row;
+        }
+    }
+
+    /// <summary>
+    /// Executes a statement within the current transaction (no additional auto-commit wrapper).
+    /// Used by set operations and CTEs to execute sub-statements.
+    /// </summary>
+    private QueryExecutionResult ExecuteDmlInternal(SqlStatement statement) => statement switch
+    {
+        SelectStatement select => ExecuteSelect(select),
+        SetOperationStatement setOp => ExecuteSetOperation(setOp),
+        CteStatement cte => ExecuteCte(cte),
+        _ => throw new InvalidOperationException($"Unsupported inner statement type {statement.GetType().Name}.")
+    };
+
+    // ── COMMON TABLE EXPRESSIONS ──────────────────────────────────────────────
+
+    private QueryExecutionResult ExecuteCte(CteStatement statement)
+    {
+        var tempTableNames = new List<string>(statement.Ctes.Count);
+        try
+        {
+            foreach (var cte in statement.Ctes)
+            {
+                var tempName = $"__cte_{cte.Name}";
+                MaterialiseCteIntoTable(cte, tempName);
+                tempTableNames.Add(tempName);
+            }
+
+            // Rewrite the body so it references __cte_name instead of the CTE names.
+            var cteNames = statement.Ctes.Select(c => c.Name).ToArray();
+            var body = RewriteCteNames(statement.Body, cteNames);
+
+            return ExecuteDmlInternal(body);
+        }
+        finally
+        {
+            foreach (var name in tempTableNames)
+            {
+                try { _storage.DropTable(name); }
+                catch { /* best-effort cleanup */ }
+            }
+        }
+    }
+
+    private void MaterialiseCteIntoTable(CteDef cte, string tempName)
+    {
+        // Execute the CTE query to get column metadata and rows.
+        var queryResult = ExecuteSelect(cte.Query);
+
+        // Build a physical schema for the temp table.
+        // CTE columns may not include an Int64 PK, so we prepend a synthetic __row_id__.
+        var cols = new List<ColumnDefinition>
+        {
+            new("__row_id__", ColumnType.Int64, IsNullable: false, IsAutoIncrement: true)
+        };
+        for (var i = 0; i < queryResult.Columns.Count; i++)
+        {
+            cols.Add(new ColumnDefinition(queryResult.Columns[i], queryResult.ColumnTypes[i], IsNullable: true));
+        }
+
+        var schema = new TableSchema(tempName, cols, primaryKeyOrdinal: 0);
+        _storage.CreateTable(schema);
+
+        // Insert all rows, assigning sequential __row_id__ values (1-based).
+        var rowId = 1L;
+        foreach (var row in queryResult.Rows)
+        {
+            var values = new object?[row.Length + 1];
+            values[0] = rowId++;
+            Array.Copy(row, 0, values, 1, row.Length);
+            _storage.Insert(tempName, values);
+        }
+    }
+
+    /// <summary>
+    /// Rewrites all occurrences of CTE names (as table references in FROM, JOIN, subqueries)
+    /// to their physical temp table names (<c>__cte_{name}</c>).
+    /// </summary>
+    private static SqlStatement RewriteCteNames(SqlStatement body, string[] cteNames)
+    {
+        return body switch
+        {
+            SelectStatement sel => RewriteSelectCteNames(sel, cteNames),
+            SetOperationStatement setOp => setOp with
+            {
+                Left = RewriteCteNames(setOp.Left, cteNames),
+                Right = RewriteCteNames(setOp.Right, cteNames)
+            },
+            CteStatement inner => inner with { Body = RewriteCteNames(inner.Body, cteNames) },
+            _ => body
+        };
+    }
+
+    private static SelectStatement RewriteSelectCteNames(SelectStatement sel, string[] cteNames)
+    {
+        var tableName = MapCteName(sel.TableName, cteNames);
+
+        var joins = sel.Joins.Count == 0 ? sel.Joins : sel.Joins
+            .Select(j => IsCte(j.TableName, cteNames)
+                ? j with { TableName = $"__cte_{j.TableName}" }
+                : j)
+            .ToList();
+
+        return sel with { TableName = tableName, Joins = joins };
+    }
+
+    private static string MapCteName(string name, string[] cteNames) =>
+        IsCte(name, cteNames) ? $"__cte_{name}" : name;
+
+    private static bool IsCte(string name, string[] cteNames) =>
+        cteNames.Any(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase));
+
+    // ── WINDOW FUNCTIONS ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Applies all window function items from the SELECT list as a post-processing step
+    /// over the already-projected (possibly augmented) result rows.
+    /// <paramref name="baseColCount"/> is the number of original (non-auxiliary) columns in
+    /// <paramref name="baseResult"/>; pass -1 when all columns are original (SELECT * base).
+    /// Returns a new result containing only the original columns plus window result columns.
+    /// </summary>
+    private static QueryExecutionResult ApplyWindowFunctions(
+        QueryExecutionResult baseResult,
+        IReadOnlyList<WindowFunctionSelectItem> windowItems,
+        int baseColCount)
+    {
+        // Build a column-name → index mapping over the projected (possibly augmented) result.
+        var columnMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < baseResult.Columns.Count; i++)
+            columnMap[baseResult.Columns[i]] = i;
+
+        // How many columns to keep from the base; aux cols (appended for window use only) are dropped.
+        var effectiveBaseCount = baseColCount < 0 ? baseResult.Columns.Count : baseColCount;
+
+        // Compute all window function values over the full (augmented) base rows.
+        var baseRows = baseResult.Rows.Select(r => r.ToArray()).ToList();
+        var windowResults = new List<object?[]>(windowItems.Count);
+        var colNames = baseResult.Columns.Take(effectiveBaseCount).ToList();
+        var colTypes = baseResult.ColumnTypes.Take(effectiveBaseCount).ToList();
+
+        foreach (var wfItem in windowItems)
+        {
+            windowResults.Add(ComputeWindowFunction(wfItem, baseRows, columnMap));
+
+            var fnName = wfItem.Fn switch
+            {
+                WindowFn.RowNumber => "ROW_NUMBER()",
+                WindowFn.Rank => "RANK()",
+                WindowFn.DenseRank => "DENSE_RANK()",
+                WindowFn.Lag => "LAG()",
+                WindowFn.Lead => "LEAD()",
+                _ => wfItem.Fn.ToString()
+            };
+            colNames.Add(wfItem.Alias ?? fnName);
+            colTypes.Add(ColumnType.Int64);
+        }
+
+        // Assemble final rows: first effectiveBaseCount original columns + window result columns.
+        var finalRows = new object?[baseRows.Count][];
+        for (var i = 0; i < baseRows.Count; i++)
+        {
+            var dest = new object?[effectiveBaseCount + windowItems.Count];
+            Array.Copy(baseRows[i], dest, effectiveBaseCount);
+            for (var w = 0; w < windowItems.Count; w++)
+                dest[effectiveBaseCount + w] = windowResults[w][i];
+            finalRows[i] = dest;
+        }
+
+        return QueryExecutionResult.WithRows(colNames, finalRows, colTypes);
+    }
+
+    private static object?[] ComputeWindowFunction(
+        WindowFunctionSelectItem wfItem,
+        IReadOnlyList<object?[]> rows,
+        IReadOnlyDictionary<string, int> columnMap)
+    {
+        // Build a partition key for a row using the PARTITION BY columns.
+        var partitionOrdinals = wfItem.Spec.PartitionBy
+            .Select(col => GetWindowColumnOrdinal(columnMap, col.ColumnName))
+            .ToArray();
+
+        GroupKey partitionKey(object?[] row) =>
+            partitionOrdinals.Length == 0
+                ? new GroupKey(Array.Empty<object?>())
+                : new GroupKey(partitionOrdinals.Select(o => row[o]).ToArray());
+
+        var groups = rows
+            .Select((row, idx) => (row, idx))
+            .GroupBy(x => partitionKey(x.row), new GroupKeyComparer());
+
+        var result = new object?[rows.Count];
+
+        foreach (var group in groups)
+        {
+            // Sort partition by ORDER BY columns.
+            var partitionRows = ApplyWindowOrderBy(group.ToList(), wfItem.Spec.OrderBy, columnMap);
+
+            switch (wfItem.Fn)
+            {
+                case WindowFn.RowNumber:
+                    for (var i = 0; i < partitionRows.Count; i++)
+                        result[partitionRows[i].idx] = (long)(i + 1);
+                    break;
+
+                case WindowFn.Rank:
+                    AssignRank(partitionRows, result, columnMap, wfItem.Spec.OrderBy, dense: false);
+                    break;
+
+                case WindowFn.DenseRank:
+                    AssignRank(partitionRows, result, columnMap, wfItem.Spec.OrderBy, dense: true);
+                    break;
+
+                case WindowFn.Lag:
+                case WindowFn.Lead:
+                    AssignLagLead(partitionRows, result, wfItem, columnMap);
+                    break;
+            }
+        }
+
+        return result;
+    }
+
+    private static int GetWindowColumnOrdinal(IReadOnlyDictionary<string, int> columnMap, string columnName)
+    {
+        if (!columnMap.TryGetValue(columnName, out var ordinal))
+            throw new InvalidOperationException(
+                $"Column '{columnName}' is referenced in a window OVER clause but is not available in the result set. " +
+                $"Include it in the SELECT list or ensure it is projected.");
+        return ordinal;
+    }
+
+    private static List<(object?[] row, int idx)> ApplyWindowOrderBy(
+        List<(object?[] row, int idx)> partition,
+        IReadOnlyList<OrderByTerm> orderBy,
+        IReadOnlyDictionary<string, int> columnMap)
+    {
+        if (orderBy.Count == 0)
+            return partition;
+
+        IOrderedEnumerable<(object?[] row, int idx)>? ordered = null;
+        for (var i = 0; i < orderBy.Count; i++)
+        {
+            var term = orderBy[i];
+            var colOrd = GetWindowColumnOrdinal(columnMap, term.Column.ColumnName);
+            if (i == 0)
+            {
+                ordered = term.Descending
+                    ? partition.OrderByDescending(x => x.row[colOrd], NullableComparer.Instance)
+                    : partition.OrderBy(x => x.row[colOrd], NullableComparer.Instance);
+            }
+            else
+            {
+                ordered = term.Descending
+                    ? ordered!.ThenByDescending(x => x.row[colOrd], NullableComparer.Instance)
+                    : ordered!.ThenBy(x => x.row[colOrd], NullableComparer.Instance);
+            }
+        }
+
+        return (ordered ?? partition.AsEnumerable()).ToList();
+    }
+
+    private static void AssignRank(
+        List<(object?[] row, int idx)> partition,
+        object?[] result,
+        IReadOnlyDictionary<string, int> columnMap,
+        IReadOnlyList<OrderByTerm> orderBy,
+        bool dense)
+    {
+        var rank = 1L;
+        var denseRank = 1L;
+
+        for (var i = 0; i < partition.Count; i++)
+        {
+            if (i == 0)
+            {
+                result[partition[i].idx] = dense ? denseRank : rank;
+            }
+            else
+            {
+                var isTie = IsTie(partition[i - 1].row, partition[i].row, orderBy, columnMap);
+                if (!isTie)
+                {
+                    rank = i + 1;
+                    denseRank++;
+                }
+                result[partition[i].idx] = dense ? denseRank : rank;
+            }
+        }
+    }
+
+    private static bool IsTie(
+        object?[] a,
+        object?[] b,
+        IReadOnlyList<OrderByTerm> orderBy,
+        IReadOnlyDictionary<string, int> columnMap)
+    {
+        foreach (var term in orderBy)
+        {
+            var col = GetWindowColumnOrdinal(columnMap, term.Column.ColumnName);
+            if (NullableComparer.Instance.Compare(a[col], b[col]) != 0)
+                return false;
+        }
+        return true;
+    }
+
+    private static void AssignLagLead(
+        List<(object?[] row, int idx)> partition,
+        object?[] result,
+        WindowFunctionSelectItem wfItem,
+        IReadOnlyDictionary<string, int> columnMap)
+    {
+        if (wfItem.Args.Count == 0)
+            throw new InvalidOperationException($"{wfItem.Fn} requires at least one argument (the column to read).");
+
+        var colArg = wfItem.Args[0];
+        var colOrd = colArg is ColumnScalarExpr ce
+            ? GetWindowColumnOrdinal(columnMap, ce.Column.ColumnName)
+            : throw new InvalidOperationException($"{wfItem.Fn} first argument must be a column reference.");
+
+        var offset = 1;
+        if (wfItem.Args.Count >= 2 && wfItem.Args[1] is LiteralScalarExpr le)
+            offset = Convert.ToInt32(le.Value.Value);
+
+        for (var i = 0; i < partition.Count; i++)
+        {
+            var targetIdx = wfItem.Fn == WindowFn.Lag ? i - offset : i + offset;
+            result[partition[i].idx] = targetIdx >= 0 && targetIdx < partition.Count
+                ? partition[targetIdx].row[colOrd]
+                : null;
+        }
+    }
 }
 
 /// <summary>Compares values that may be null, placing nulls last.</summary>
@@ -1343,6 +1795,19 @@ file sealed class NullableComparer : IComparer<object?>
         }
         return string.Compare(x.ToString(), y.ToString(), StringComparison.Ordinal);
     }
+}
+
+/// <summary>Equality comparer over <see cref="GroupKey"/> for window-function partitioning.</summary>
+file sealed class GroupKeyComparer : IEqualityComparer<GroupKey>
+{
+    public bool Equals(GroupKey? x, GroupKey? y)
+    {
+        if (x is null && y is null) return true;
+        if (x is null || y is null) return false;
+        return x.Equals(y);
+    }
+
+    public int GetHashCode(GroupKey obj) => obj.GetHashCode();
 }
 
 /// <summary>Equality key for GROUP BY bucketing.</summary>

@@ -19,7 +19,7 @@ internal sealed class SqlParser
         {
             SqlTokenKind.Create => ParseCreate(),
             SqlTokenKind.Insert => ParseInsert(),
-            SqlTokenKind.Select => ParseSelect(),
+            SqlTokenKind.Select => ParseSelectOrSetOperation(),
             SqlTokenKind.Update => ParseUpdate(),
             SqlTokenKind.Delete => ParseDelete(),
             SqlTokenKind.Begin => ParseBegin(),
@@ -28,6 +28,7 @@ internal sealed class SqlParser
             SqlTokenKind.Drop => ParseDrop(),
             SqlTokenKind.Alter => ParseAlter(),
             SqlTokenKind.Truncate => ParseTruncate(),
+            SqlTokenKind.With => ParseCteStatement(),
             _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
@@ -47,7 +48,7 @@ internal sealed class SqlParser
             {
                 SqlTokenKind.Create => ParseCreate(),
                 SqlTokenKind.Insert => ParseInsert(),
-                SqlTokenKind.Select => ParseSelect(),
+                SqlTokenKind.Select => ParseSelectOrSetOperation(),
                 SqlTokenKind.Update => ParseUpdate(),
                 SqlTokenKind.Delete => ParseDelete(),
                 SqlTokenKind.Begin => ParseBegin(),
@@ -56,6 +57,7 @@ internal sealed class SqlParser
                 SqlTokenKind.Drop => ParseDrop(),
                 SqlTokenKind.Alter => ParseAlter(),
                 SqlTokenKind.Truncate => ParseTruncate(),
+                SqlTokenKind.With => ParseCteStatement(),
                 _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
             };
 
@@ -325,7 +327,115 @@ internal sealed class SqlParser
         return new InsertStatement(tableName, columns, valueRows, isOrReplace);
     }
 
-    private SelectStatement ParseSelect()
+    /// <summary>
+    /// Parses a SELECT statement, then wraps it in a <see cref="SetOperationStatement"/> if
+    /// UNION / UNION ALL / INTERSECT / EXCEPT follows (left-associative). ORDER BY / LIMIT / OFFSET
+    /// after the last operand apply to the whole set expression.
+    /// </summary>
+    private SqlStatement ParseSelectOrSetOperation()
+    {
+        // Parse the left-hand SELECT without consuming trailing ORDER BY/LIMIT/OFFSET
+        // because those might belong to the set operation, not to this individual SELECT.
+        SqlStatement left = ParseSelect(suppressTrailingClauses: false);
+
+        while (Peek().Kind is SqlTokenKind.Union or SqlTokenKind.Intersect or SqlTokenKind.Except)
+        {
+            SetOp op;
+            if (Peek().Kind == SqlTokenKind.Union)
+            {
+                Advance(); // consume UNION
+                op = Match(SqlTokenKind.All) ? SetOp.UnionAll : SetOp.UnionDistinct;
+            }
+            else if (Peek().Kind == SqlTokenKind.Intersect)
+            {
+                Advance();
+                op = SetOp.Intersect;
+            }
+            else
+            {
+                Advance(); // EXCEPT
+                op = SetOp.Except;
+            }
+
+            // Right-hand SELECT must NOT consume ORDER BY/LIMIT/OFFSET — those belong to the set op.
+            SelectStatement right = ParseSelect(suppressTrailingClauses: true);
+            left = new SetOperationStatement(left, op, right, null, null, null);
+        }
+
+        if (left is not SetOperationStatement)
+            return left;
+
+        // Trailing ORDER BY / LIMIT / OFFSET belong to the set operation result.
+        IReadOnlyList<OrderByTerm>? orderBy = null;
+        if (Match(SqlTokenKind.Order))
+        {
+            Expect(SqlTokenKind.By);
+            var terms = new List<OrderByTerm>();
+            do
+            {
+                var col = ParseColumnReference("Expected a column name in ORDER BY.");
+                var desc = Match(SqlTokenKind.Desc);
+                if (!desc) Match(SqlTokenKind.Asc);
+                terms.Add(new OrderByTerm(col, desc));
+            }
+            while (Match(SqlTokenKind.Comma));
+            orderBy = terms;
+        }
+
+        int? limit = null;
+        if (Match(SqlTokenKind.Limit))
+        {
+            var tok = Advance();
+            if (tok.Kind != SqlTokenKind.IntegerLiteral)
+                throw new InvalidOperationException("Expected an integer literal after LIMIT.");
+            var limitVal = long.Parse(tok.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
+            if (limitVal < 0 || limitVal > int.MaxValue)
+                throw new InvalidOperationException($"LIMIT value {limitVal} is out of the valid range [0, {int.MaxValue}].");
+            limit = (int)limitVal;
+        }
+
+        int? offset = null;
+        if (Match(SqlTokenKind.Offset))
+        {
+            var tok = Advance();
+            if (tok.Kind != SqlTokenKind.IntegerLiteral)
+                throw new InvalidOperationException("Expected an integer literal after OFFSET.");
+            var offsetVal = long.Parse(tok.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
+            if (offsetVal < 0 || offsetVal > int.MaxValue)
+                throw new InvalidOperationException($"OFFSET value {offsetVal} is out of the valid range [0, {int.MaxValue}].");
+            offset = (int)offsetVal;
+        }
+
+        var setOp = (SetOperationStatement)left;
+        return setOp with { OrderBy = orderBy, Limit = limit, Offset = offset };
+    }
+
+    /// <summary>Parses WITH name AS (SELECT …) [, …] body.</summary>
+    private CteStatement ParseCteStatement()
+    {
+        Expect(SqlTokenKind.With);
+        var ctes = new List<CteDef>();
+
+        do
+        {
+            var name = ExpectIdentifier("Expected a CTE name after WITH.");
+            Expect(SqlTokenKind.As);
+            Expect(SqlTokenKind.OpenParen);
+            var query = ParseSelect();
+            Expect(SqlTokenKind.CloseParen);
+            ctes.Add(new CteDef(name, query));
+        }
+        while (Match(SqlTokenKind.Comma));
+
+        // The body can itself be a set operation.
+        SqlStatement body = Peek().Kind == SqlTokenKind.Select
+            ? ParseSelectOrSetOperation()
+            : throw new InvalidOperationException("Expected SELECT after WITH … AS (…).");
+
+        return new CteStatement(ctes, body);
+    }
+
+    private SelectStatement ParseSelect(bool suppressTrailingClauses = false)
     {
         Expect(SqlTokenKind.Select);
 
@@ -391,37 +501,47 @@ internal sealed class SqlParser
         }
 
         IReadOnlyList<OrderByTerm>? orderBy = null;
-        if (Match(SqlTokenKind.Order))
-        {
-            Expect(SqlTokenKind.By);
-            var terms = new List<OrderByTerm>();
-            do
-            {
-                var col = ParseColumnReference("Expected a column name in ORDER BY.");
-                var descending = Match(SqlTokenKind.Desc);
-                if (!descending) Match(SqlTokenKind.Asc); // ASC is the default; consume if present
-                terms.Add(new OrderByTerm(col, descending));
-            }
-            while (Match(SqlTokenKind.Comma));
-            orderBy = terms;
-        }
-
         int? limit = null;
-        if (Match(SqlTokenKind.Limit))
-        {
-            var token = Advance();
-            if (token.Kind != SqlTokenKind.IntegerLiteral)
-                throw new InvalidOperationException("Expected an integer literal after LIMIT.");
-            limit = (int)long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
-        }
-
         int? offset = null;
-        if (Match(SqlTokenKind.Offset))
+
+        if (!suppressTrailingClauses)
         {
-            var token = Advance();
-            if (token.Kind != SqlTokenKind.IntegerLiteral)
-                throw new InvalidOperationException("Expected an integer literal after OFFSET.");
-            offset = (int)long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
+            if (Match(SqlTokenKind.Order))
+            {
+                Expect(SqlTokenKind.By);
+                var terms = new List<OrderByTerm>();
+                do
+                {
+                    var col = ParseColumnReference("Expected a column name in ORDER BY.");
+                    var descending = Match(SqlTokenKind.Desc);
+                    if (!descending) Match(SqlTokenKind.Asc); // ASC is the default; consume if present
+                    terms.Add(new OrderByTerm(col, descending));
+                }
+                while (Match(SqlTokenKind.Comma));
+                orderBy = terms;
+            }
+
+            if (Match(SqlTokenKind.Limit))
+            {
+                var token = Advance();
+                if (token.Kind != SqlTokenKind.IntegerLiteral)
+                    throw new InvalidOperationException("Expected an integer literal after LIMIT.");
+                var limitVal = long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
+                if (limitVal < 0 || limitVal > int.MaxValue)
+                    throw new InvalidOperationException($"LIMIT value {limitVal} is out of the valid range [0, {int.MaxValue}].");
+                limit = (int)limitVal;
+            }
+
+            if (Match(SqlTokenKind.Offset))
+            {
+                var token = Advance();
+                if (token.Kind != SqlTokenKind.IntegerLiteral)
+                    throw new InvalidOperationException("Expected an integer literal after OFFSET.");
+                var offsetVal = long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
+                if (offsetVal < 0 || offsetVal > int.MaxValue)
+                    throw new InvalidOperationException($"OFFSET value {offsetVal} is out of the valid range [0, {int.MaxValue}].");
+                offset = (int)offsetVal;
+            }
         }
 
         var stmt = new SelectStatement(tableName, columns, filter, joins, groupBy, having, orderBy, limit, offset, isDistinct);
@@ -444,6 +564,9 @@ internal sealed class SqlParser
             item = ParseScalarFunctionSelectItem();
         else if (kind == SqlTokenKind.Replace && PeekAhead(1).Kind == SqlTokenKind.OpenParen)
             item = ParseScalarFunctionSelectItem();
+        else if (kind is SqlTokenKind.RowNumber or SqlTokenKind.Rank or SqlTokenKind.DenseRank
+                      or SqlTokenKind.Lag or SqlTokenKind.Lead)
+            item = ParseWindowFunctionSelectItem();
         else
             item = new ColumnSelectItem(ParseColumnReference("Expected a column name in the SELECT list."));
 
@@ -456,11 +579,72 @@ internal sealed class SqlParser
                 AggregateSelectItem agg => agg with { Alias = alias },
                 ScalarFunctionSelectItem fn => fn with { Alias = alias },
                 CaseWhenSelectItem cw => cw with { Alias = alias },
+                WindowFunctionSelectItem wf => wf with { Alias = alias },
                 _ => item
             };
         }
 
         return item;
+    }
+
+    private WindowFunctionSelectItem ParseWindowFunctionSelectItem()
+    {
+        var fnToken = Advance();
+        var fn = fnToken.Kind switch
+        {
+            SqlTokenKind.RowNumber => WindowFn.RowNumber,
+            SqlTokenKind.Rank => WindowFn.Rank,
+            SqlTokenKind.DenseRank => WindowFn.DenseRank,
+            SqlTokenKind.Lag => WindowFn.Lag,
+            SqlTokenKind.Lead => WindowFn.Lead,
+            _ => throw new InvalidOperationException($"Unknown window function token '{fnToken.Lexeme}'.")
+        };
+
+        Expect(SqlTokenKind.OpenParen);
+        var args = new List<ScalarExpr>();
+        if (Peek().Kind != SqlTokenKind.CloseParen)
+        {
+            do
+            {
+                args.Add(ParseScalarExpr());
+            }
+            while (Match(SqlTokenKind.Comma));
+        }
+        Expect(SqlTokenKind.CloseParen);
+
+        Expect(SqlTokenKind.Over);
+        Expect(SqlTokenKind.OpenParen);
+
+        // PARTITION BY
+        var partitionBy = new List<ColumnReference>();
+        if (Match(SqlTokenKind.Partition))
+        {
+            Expect(SqlTokenKind.By);
+            do
+            {
+                partitionBy.Add(ParseColumnReference("Expected a column name in PARTITION BY."));
+            }
+            while (Match(SqlTokenKind.Comma));
+        }
+
+        // ORDER BY
+        var orderBy = new List<OrderByTerm>();
+        if (Match(SqlTokenKind.Order))
+        {
+            Expect(SqlTokenKind.By);
+            do
+            {
+                var col = ParseColumnReference("Expected a column name in window ORDER BY.");
+                var desc = Match(SqlTokenKind.Desc);
+                if (!desc) Match(SqlTokenKind.Asc);
+                orderBy.Add(new OrderByTerm(col, desc));
+            }
+            while (Match(SqlTokenKind.Comma));
+        }
+
+        Expect(SqlTokenKind.CloseParen);
+
+        return new WindowFunctionSelectItem(fn, args, new WindowSpec(partitionBy, orderBy));
     }
 
     private ScalarFunctionSelectItem ParseScalarFunctionSelectItem()
@@ -1068,3 +1252,39 @@ internal sealed record OrderByTerm(ColumnReference Column, bool Descending);
 
 /// <summary>Single aggregate-comparison predicate: e.g. COUNT(*) &gt; 5.</summary>
 internal sealed record HavingExpression(AggregateFn Fn, ColumnReference? Argument, ComparisonOp Op, SqlLiteral Value);
+
+// ── SET OPERATIONS (UNION / INTERSECT / EXCEPT) ───────────────────────────────
+
+internal enum SetOp { UnionAll, UnionDistinct, Intersect, Except }
+
+/// <summary>Combines two query results with a set operator. Optional ORDER BY / LIMIT / OFFSET apply to the final result.</summary>
+internal sealed record SetOperationStatement(
+    SqlStatement Left,
+    SetOp Op,
+    SqlStatement Right,
+    IReadOnlyList<OrderByTerm>? OrderBy,
+    int? Limit,
+    int? Offset) : SqlStatement;
+
+// ── COMMON TABLE EXPRESSIONS ──────────────────────────────────────────────────
+
+internal sealed record CteDef(string Name, SelectStatement Query);
+
+/// <summary>WITH name AS (SELECT …) [, …] body — CTEs are materialised as temp tables before executing the body.</summary>
+internal sealed record CteStatement(IReadOnlyList<CteDef> Ctes, SqlStatement Body) : SqlStatement;
+
+// ── WINDOW FUNCTIONS ──────────────────────────────────────────────────────────
+
+internal enum WindowFn { RowNumber, Rank, DenseRank, Lag, Lead }
+
+/// <summary>OVER (PARTITION BY … ORDER BY …) clause attached to a window function.</summary>
+internal sealed record WindowSpec(
+    IReadOnlyList<ColumnReference> PartitionBy,
+    IReadOnlyList<OrderByTerm> OrderBy);
+
+/// <summary>Window function call in a SELECT list: fn([args]) OVER (…).</summary>
+internal sealed record WindowFunctionSelectItem(
+    WindowFn Fn,
+    IReadOnlyList<ScalarExpr> Args,
+    WindowSpec Spec,
+    string? Alias = null) : SelectItem;

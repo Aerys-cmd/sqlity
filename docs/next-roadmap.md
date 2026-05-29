@@ -25,6 +25,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - `LIKE` / `ILIKE`, `BETWEEN` / `NOT BETWEEN`, `NOT IN`, `SELECT DISTINCT`, UPDATE/DELETE without `WHERE`, multi-row `INSERT`, column aliases, `COALESCE` / `NULLIF` / `IFNULL` ✅
 - `DEFAULT expr`, `AUTOINCREMENT` / `SERIAL`, inline `UNIQUE`, `INSERT OR REPLACE`, `INSERT INTO t SELECT`, `CREATE VIEW`, `TRUNCATE TABLE` ✅
 - Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR` ✅
+- `CASE WHEN … THEN … END` expressions, `EXISTS` / `NOT EXISTS`, `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT`, CTEs (`WITH … AS`), window functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`) ✅
 
 ---
 
@@ -59,14 +60,14 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 ## Phase 3 — Advanced SQL
 
-- ✅ Scalar functions: `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR`
-- ✅ `CASE WHEN cond THEN expr … ELSE expr END` expressions in SELECT and WHERE
-- ✅ `EXISTS (SELECT …)` / `NOT EXISTS (SELECT …)` as WHERE atoms
-- `UNION` / `UNION ALL` — combine two SELECT results
-- `INTERSECT` / `EXCEPT` — set-difference operations
-- Common Table Expressions: `WITH name AS (SELECT …) [, …] SELECT …` (CTEs materialised as temp tables)
-- `SAVEPOINT name` / `RELEASE name` / `ROLLBACK TO name` — nested transaction savepoints (DO WE REALLY NEED THIS ?)
-- Window functions: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LAG()`, `LEAD()` with `OVER (PARTITION BY … ORDER BY …)`
+✅ **Complete.** All items implemented and shipped.
+
+- `UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTR`, `REPLACE`, `ABS`, `ROUND`, `CEIL`, `FLOOR` scalar functions ✅
+- `CASE WHEN cond THEN expr … ELSE expr END` expressions in SELECT and WHERE ✅
+- `EXISTS (SELECT …)` / `NOT EXISTS (SELECT …)` as WHERE atoms ✅
+- `UNION` / `UNION ALL`, `INTERSECT`, `EXCEPT` — set operations ✅
+- Common Table Expressions: `WITH name AS (SELECT …) [, …] SELECT …` (CTEs materialised as temp tables) ✅
+- Window functions: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `LAG()`, `LEAD()` with `OVER (PARTITION BY … ORDER BY …)` ✅
 
 ---
 
