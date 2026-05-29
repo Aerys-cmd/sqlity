@@ -34,6 +34,9 @@ public sealed class QueryEngine : IDisposable
 
     public bool InTransaction => _storage.InTransaction;
 
+    /// <summary>Exposes the underlying storage engine for testing purposes.</summary>
+    internal StorageEngine Storage => _storage;
+
     public void BeginTransaction()
     {
         if (_storage.InTransaction)
@@ -144,9 +147,9 @@ public sealed class QueryEngine : IDisposable
                 AlterTableRenameColumnStatement alterRenameCol => ExecuteAlterTableRenameColumn(alterRenameCol),
                 TruncateTableStatement truncate => ExecuteTruncateTable(truncate),
                 CreateViewStatement createView => ExecuteCreateView(createView),
+                AnalyzeStatement analyze => ExecuteAnalyze(analyze),
                 SetOperationStatement setOp => ExecuteSetOperation(setOp),
                 CteStatement cte => ExecuteCte(cte),
-                AnalyzeStatement analyze => ExecuteAnalyze(analyze),
                 _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
             };
 
@@ -260,10 +263,15 @@ public sealed class QueryEngine : IDisposable
 
     private QueryExecutionResult ExecuteAnalyze(AnalyzeStatement statement)
     {
-        if (statement.TableName is not null)
-            _storage.AnalyzeTable(statement.TableName);
+        if (statement.TableName is null)
+        {
+            foreach (var table in _storage.ListTables())
+                _storage.AnalyzeTable(table.TableName);
+        }
         else
-            _storage.AnalyzeAll();
+        {
+            _storage.AnalyzeTable(statement.TableName);
+        }
         return QueryExecutionResult.Empty(rowsAffected: 0);
     }
 
@@ -781,44 +789,44 @@ public sealed class QueryEngine : IDisposable
             switch (item)
             {
                 case ColumnSelectItem colItem:
-                {
-                    var col = colItem.Column;
-                    if (col.TableName is not null &&
-                        !string.Equals(col.TableName, table.TableName, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException($"Table '{col.TableName}' not found in the FROM clause.");
-
-                    var ordinal = table.Schema.GetColumnOrdinal(col.ColumnName);
-                    projectors.Add(row => row[ordinal]);
-                    names.Add(colItem.Alias ?? (col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName));
-                    types.Add(table.Schema.Columns[ordinal].Type);
-                    break;
-                }
-                case ScalarFunctionSelectItem fnItem:
-                {
-                    var fn = fnItem.Fn;
-                    var args = fnItem.Args;
-                    Func<object?[], object?> projector = row => EvaluateScalarFunction(fn, args, table, row);
-                    projectors.Add(projector);
-                    var defaultName = fn switch
                     {
-                        ScalarFn.Coalesce => "COALESCE",
-                        ScalarFn.Nullif => "NULLIF",
-                        ScalarFn.Ifnull => "IFNULL",
-                        _ => fn.ToString()
-                    };
-                    names.Add(fnItem.Alias ?? defaultName);
-                    types.Add(ColumnType.String); // scalar function returns vary; use String as default
-                    break;
-                }
+                        var col = colItem.Column;
+                        if (col.TableName is not null &&
+                            !string.Equals(col.TableName, table.TableName, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException($"Table '{col.TableName}' not found in the FROM clause.");
+
+                        var ordinal = table.Schema.GetColumnOrdinal(col.ColumnName);
+                        projectors.Add(row => row[ordinal]);
+                        names.Add(colItem.Alias ?? (col.TableName is not null ? $"{col.TableName}.{col.ColumnName}" : col.ColumnName));
+                        types.Add(table.Schema.Columns[ordinal].Type);
+                        break;
+                    }
+                case ScalarFunctionSelectItem fnItem:
+                    {
+                        var fn = fnItem.Fn;
+                        var args = fnItem.Args;
+                        Func<object?[], object?> projector = row => EvaluateScalarFunction(fn, args, table, row);
+                        projectors.Add(projector);
+                        var defaultName = fn switch
+                        {
+                            ScalarFn.Coalesce => "COALESCE",
+                            ScalarFn.Nullif => "NULLIF",
+                            ScalarFn.Ifnull => "IFNULL",
+                            _ => fn.ToString()
+                        };
+                        names.Add(fnItem.Alias ?? defaultName);
+                        types.Add(ColumnType.String); // scalar function returns vary; use String as default
+                        break;
+                    }
                 case CaseWhenSelectItem caseItem:
-                {
-                    var context = new[] { (Table: table, Offset: 0) };
-                    Func<object?[], object?> projector = row => EvaluateCaseWhen(caseItem.Branches, caseItem.ElseResult, row, context);
-                    projectors.Add(projector);
-                    names.Add(caseItem.Alias ?? "CASE");
-                    types.Add(ColumnType.String);
-                    break;
-                }
+                    {
+                        var context = new[] { (Table: table, Offset: 0) };
+                        Func<object?[], object?> projector = row => EvaluateCaseWhen(caseItem.Branches, caseItem.ElseResult, row, context);
+                        projectors.Add(projector);
+                        names.Add(caseItem.Alias ?? "CASE");
+                        types.Add(ColumnType.String);
+                        break;
+                    }
                 default:
                     throw new InvalidOperationException("Aggregate functions are not allowed outside a GROUP BY context.");
             }
@@ -842,7 +850,8 @@ public sealed class QueryEngine : IDisposable
         return elseResult is null ? null : QueryExecutor.ResolveScalarExpr(elseResult, row, context);
     }
 
-    private static object? EvaluateScalarFunction(ScalarFn fn, IReadOnlyList<ScalarExpr> args, TableInfo table, object?[] row)    {
+    private static object? EvaluateScalarFunction(ScalarFn fn, IReadOnlyList<ScalarExpr> args, TableInfo table, object?[] row)
+    {
         object?[] resolved = args.Select(arg => arg switch
         {
             ColumnScalarExpr ce => row[table.Schema.GetColumnOrdinal(ce.Column.ColumnName)],

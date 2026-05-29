@@ -11,6 +11,12 @@ namespace Sqlity.Storage;
 
 public sealed class StorageEngine : IDisposable
 {
+    // ── Auto-analyze configuration ────────────────────────────────────────────
+    /// <summary>Minimum committed mutations before auto-analyze is triggered for a table.</summary>
+    internal const long AutoAnalyzeBaseThreshold = 50L;
+    /// <summary>Fraction of the last-known row count added on top of the base threshold.</summary>
+    internal const double AutoAnalyzeScaleFactor = 0.2;
+
     private readonly IPager _pager;
     private readonly bool _ownsPager;
     private readonly CatalogStore _catalog;
@@ -20,9 +26,17 @@ public sealed class StorageEngine : IDisposable
     private readonly RowSerializer _rowSerializer = new();
 
     // Write-through in-memory cache loaded from the stats catalog page on open.
-    // Explicit ANALYZE writes to both the cache and the catalog page; auto-analyze
-    // (triggered by the query planner) writes only to the cache.
     private readonly Dictionary<string, TableStatistics> _statistics =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    // Committed mutation counts since the last auto-analyze per table.
+    // Loaded from the stats catalog on open; persisted on every commit that carries mutations.
+    private readonly Dictionary<string, long> _mutations =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    // Mutations accumulated in the current open transaction only.
+    // Added to _mutations on Commit; discarded on Rollback.
+    private readonly Dictionary<string, long> _inTxnMutations =
         new(StringComparer.OrdinalIgnoreCase);
 
     public StorageEngine(IPager pager)
@@ -105,16 +119,8 @@ public sealed class StorageEngine : IDisposable
 
     /// <summary>
     /// Scans <paramref name="tableName"/> and caches per-table row count and per-column
-    /// distinct-value estimates.
+    /// distinct-value estimates. Resets the auto-analyze mutation counter for the table.
     /// </summary>
-    /// <param name="tableName">Table to analyze.</param>
-    /// <param name="persist">
-    /// When <see langword="true"/> (default), stats are written to the
-    /// <c>__sqlity_stat1</c> catalog page so they survive connection close and process
-    /// restart. Pass <see langword="false"/> for in-memory-only collection (used by the
-    /// query planner's lazy auto-analyze, which must not have hidden write side-effects
-    /// during a SELECT).
-    /// </param>
     public void AnalyzeTable(string tableName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
@@ -139,6 +145,7 @@ public sealed class StorageEngine : IDisposable
 
         var stats = new TableStatistics(cells.Count, ndv);
         _statistics[tableName] = stats;
+        _mutations[tableName] = 0; // reset counter — we just analyzed
 
         PersistStats(tableName, stats);
     }
@@ -156,8 +163,11 @@ public sealed class StorageEngine : IDisposable
 
     private void LoadStatsFromCatalog()
     {
-        foreach (var (tableName, stats) in _statsCatalog!.ReadAll())
+        foreach (var (tableName, stats, mutations) in _statsCatalog!.ReadAll())
+        {
             _statistics[tableName] = stats;
+            _mutations[tableName] = mutations;
+        }
     }
 
     /// <summary>
@@ -166,9 +176,10 @@ public sealed class StorageEngine : IDisposable
     /// </summary>
     private void PersistStats(string tableName, TableStatistics stats)
     {
+        _mutations.TryGetValue(tableName, out var mutations);
         try
         {
-            EnsureStatsCatalog().Upsert(tableName, stats);
+            EnsureStatsCatalog().Upsert(tableName, stats, mutations);
         }
         catch (Exception)
         {
@@ -179,6 +190,7 @@ public sealed class StorageEngine : IDisposable
     private void InvalidateStats(string tableName)
     {
         _statistics.Remove(tableName);
+        _mutations.Remove(tableName);
         _statsCatalog?.Delete(tableName);
     }
 
@@ -186,9 +198,73 @@ public sealed class StorageEngine : IDisposable
 
     public void BeginTransaction() => _pager.BeginTransaction();
 
-    public void Commit() => _pager.Commit();
+    public void Commit()
+    {
+        // Auto-analyze any tables that crossed the mutation threshold.
+        // All writes (DML + stats update) are committed atomically in the same pager transaction.
+        foreach (var (tableName, txnCount) in _inTxnMutations)
+        {
+            _mutations.TryGetValue(tableName, out var cumulative);
+            var newCumulative = cumulative + txnCount;
+            _mutations[tableName] = newCumulative;
 
-    public void Rollback() => _pager.Rollback();
+            if (newCumulative >= AutoAnalyzeThresholdFor(tableName))
+            {
+                try { AnalyzeTable(tableName); } // resets _mutations[tableName] to 0 via PersistStats
+                catch { /* best-effort: never abort a commit for stats */ }
+            }
+            else
+            {
+                // Persist the updated mutation count (cheap: just updates the stats blob).
+                if (_statistics.TryGetValue(tableName, out var stats))
+                    PersistStats(tableName, stats);
+                else
+                    PersistMutationCountOnly(tableName, newCumulative);
+            }
+        }
+        _inTxnMutations.Clear();
+
+        _pager.Commit();
+    }
+
+    public void Rollback()
+    {
+        // Rolled-back mutations never count toward the auto-analyze threshold.
+        _inTxnMutations.Clear();
+        _pager.Rollback();
+    }
+
+    // ── Auto-analyze helpers ─────────────────────────────────────────────────
+
+    private void TrackMutation(string tableName)
+    {
+        _inTxnMutations.TryGetValue(tableName, out var current);
+        _inTxnMutations[tableName] = current + 1;
+    }
+
+    private long AutoAnalyzeThresholdFor(string tableName)
+    {
+        var rowCount = _statistics.TryGetValue(tableName, out var stats) ? stats.RowCount : 0L;
+        return AutoAnalyzeBaseThreshold + (long)(AutoAnalyzeScaleFactor * rowCount);
+    }
+
+    /// <summary>
+    /// Persists just the mutation count for a table that has no full stats yet.
+    /// Writes a stub stats row so the count survives reconnects.
+    /// </summary>
+    private void PersistMutationCountOnly(string tableName, long mutations)
+    {
+        try
+        {
+            var stub = new TableStatistics(0, new Dictionary<string, long>());
+            EnsureStatsCatalog().Upsert(tableName, stub, mutations);
+            _statistics[tableName] = stub; // keep cache consistent
+        }
+        catch (Exception)
+        {
+            // Best-effort.
+        }
+    }
 
     public TableInfo CreateTable(TableSchema schema)
     {
@@ -434,6 +510,8 @@ public sealed class StorageEngine : IDisposable
                 InsertIndexEntry(tree, table.Schema.Columns, columnOrdinals, rowValues, primaryKey, index.IsUnique);
             }
         }
+
+        TrackMutation(tableName);
     }
 
     public void Delete(string tableName, long primaryKey)
@@ -463,6 +541,8 @@ public sealed class StorageEngine : IDisposable
             throw new InvalidOperationException(
                 $"Table '{tableName}' does not contain a row with primary key {primaryKey}.", ex);
         }
+
+        TrackMutation(tableName);
     }
 
     public void Update(string tableName, long primaryKey, IReadOnlyList<object?> newValues)
@@ -501,6 +581,8 @@ public sealed class StorageEngine : IDisposable
                 InsertIndexEntry(tree, table.Schema.Columns, columnOrdinals, newValuesArray, primaryKey, index.IsUnique);
             }
         }
+
+        TrackMutation(tableName);
     }
 
     public bool TryReadByPrimaryKey(string tableName, long primaryKey, out object?[]? values)
@@ -591,7 +673,9 @@ public sealed class StorageEngine : IDisposable
         _catalog.Update(new TableInfo(table.TableId, table.TableName, newRoot, table.Schema));
 
         // All rows gone — any persisted stats are now badly misleading.
+        // Also discard any in-transaction mutation count (mutations before truncate are irrelevant).
         InvalidateStats(tableName);
+        _inTxnMutations.Remove(tableName);
 
         IncrementSchemaVersion();
     }

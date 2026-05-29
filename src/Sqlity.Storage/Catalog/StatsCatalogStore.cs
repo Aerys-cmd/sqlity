@@ -40,15 +40,15 @@ internal sealed class StatsCatalogStore
         _catalogRootPageId = catalogRootPageId;
     }
 
-    /// <summary>Returns all persisted statistics as a list of (tableName, stats) pairs.</summary>
-    public IReadOnlyList<(string TableName, TableStatistics Stats)> ReadAll()
+    /// <summary>Returns all persisted statistics as a list of (tableName, stats, mutationsSinceAnalyze) triples.</summary>
+    public IReadOnlyList<(string TableName, TableStatistics Stats, long MutationsSinceAnalyze)> ReadAll()
     {
         var page = new TableLeafPage(_pager.ReadPage(_catalogRootPageId));
-        var results = new List<(string, TableStatistics)>(page.CellCount);
+        var results = new List<(string, TableStatistics, long)>(page.CellCount);
         foreach (var cell in page.ReadAllCells())
         {
-            if (TryReadEntry(cell, out var name, out var stats))
-                results.Add((name!, stats!));
+            if (TryReadEntry(cell, out var name, out var stats, out var mutations))
+                results.Add((name!, stats!, mutations));
         }
         return results;
     }
@@ -57,7 +57,7 @@ internal sealed class StatsCatalogStore
     public TableStatistics? TryGetByTable(string tableName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
-        foreach (var (name, stats) in ReadAll())
+        foreach (var (name, stats, _) in ReadAll())
         {
             if (string.Equals(name, tableName, StringComparison.OrdinalIgnoreCase))
                 return stats;
@@ -69,7 +69,7 @@ internal sealed class StatsCatalogStore
     /// Inserts or replaces the statistics row for <paramref name="tableName"/>.
     /// Returns <see langword="false"/> and leaves the catalog unchanged if the page is full.
     /// </summary>
-    public bool Upsert(string tableName, TableStatistics stats)
+    public bool Upsert(string tableName, TableStatistics stats, long mutationsSinceAnalyze = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
         ArgumentNullException.ThrowIfNull(stats);
@@ -80,7 +80,7 @@ internal sealed class StatsCatalogStore
         var existing = FindEntry(page, tableName);
         if (existing.HasValue)
         {
-            var payload = BuildPayload(existing.Value.StatId, tableName, stats);
+            var payload = BuildPayload(existing.Value.StatId, tableName, stats, mutationsSinceAnalyze);
             var status = page.TryUpdate(new TableLeafCell(existing.Value.StatId, payload));
             if (status == TableLeafUpdateStatus.NotFound)
                 throw new InvalidOperationException($"Stats catalog: entry for '{tableName}' vanished during update.");
@@ -92,7 +92,7 @@ internal sealed class StatsCatalogStore
 
         // No existing entry — insert a new one.
         var newId = GetNextStatId(page);
-        var newPayload = BuildPayload(newId, tableName, stats);
+        var newPayload = BuildPayload(newId, tableName, stats, mutationsSinceAnalyze);
         var insertStatus = page.TryInsert(new TableLeafCell(newId, newPayload));
         if (insertStatus == TableLeafInsertStatus.PageFull)
             return false; // best-effort: continue without persistence
@@ -128,7 +128,7 @@ internal sealed class StatsCatalogStore
         if (existing is null)
             return; // no stats to rename
 
-        var payload = BuildPayload(existing.Value.StatId, newName, existing.Value.Stats);
+        var payload = BuildPayload(existing.Value.StatId, newName, existing.Value.Stats, existing.Value.Mutations);
         var status = page.TryUpdate(new TableLeafCell(existing.Value.StatId, payload));
         if (status == TableLeafUpdateStatus.NotFound)
             throw new InvalidOperationException($"Stats catalog: entry for '{oldName}' vanished during rename.");
@@ -142,18 +142,18 @@ internal sealed class StatsCatalogStore
 
     // ── Helpers ──────────────────────────────────────────────────────────────────
 
-    private (long StatId, TableStatistics Stats)? FindEntry(TableLeafPage page, string tableName)
+    private (long StatId, TableStatistics Stats, long Mutations)? FindEntry(TableLeafPage page, string tableName)
     {
         foreach (var cell in page.ReadAllCells())
         {
-            if (TryReadEntry(cell, out var name, out var stats)
+            if (TryReadEntry(cell, out var name, out var stats, out var mutations)
                 && string.Equals(name, tableName, StringComparison.OrdinalIgnoreCase))
-                return (cell.PrimaryKey, stats!);
+                return (cell.PrimaryKey, stats!, mutations);
         }
         return null;
     }
 
-    private bool TryReadEntry(TableLeafCell cell, out string? tableName, out TableStatistics? stats)
+    private bool TryReadEntry(TableLeafCell cell, out string? tableName, out TableStatistics? stats, out long mutations)
     {
         try
         {
@@ -161,8 +161,9 @@ internal sealed class StatsCatalogStore
             tableName = values[1] as string ?? throw new InvalidDataException("Stats catalog row must have a table_name.");
             var rowCount = values[2] as long? ?? throw new InvalidDataException("Stats catalog row must have a row_count.");
             var blob = values[3] as byte[] ?? throw new InvalidDataException("Stats catalog row must have a stat_blob.");
-            var columnNdv = _metaSerializer.Deserialize(blob);
+            var (columnNdv, mutationsSinceAnalyze) = _metaSerializer.Deserialize(blob);
             stats = new TableStatistics(rowCount, columnNdv);
+            mutations = mutationsSinceAnalyze;
             return true;
         }
         catch (Exception)
@@ -170,13 +171,14 @@ internal sealed class StatsCatalogStore
             // Corrupt or unrecognised stats row — skip it rather than crashing DB open.
             tableName = null;
             stats = null;
+            mutations = 0;
             return false;
         }
     }
 
-    private byte[] BuildPayload(long statId, string tableName, TableStatistics stats)
+    private byte[] BuildPayload(long statId, string tableName, TableStatistics stats, long mutationsSinceAnalyze)
     {
-        var blob = _metaSerializer.Serialize(stats.ColumnNdv);
+        var blob = _metaSerializer.Serialize(stats.ColumnNdv, mutationsSinceAnalyze);
         var values = new object?[] { statId, tableName, stats.RowCount, blob };
         var buffer = new byte[_rowSerializer.GetRequiredSize(CatalogSchema, values)];
         var written = _rowSerializer.Write(CatalogSchema, values, buffer);
