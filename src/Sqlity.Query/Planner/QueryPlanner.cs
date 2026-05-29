@@ -5,8 +5,10 @@ using Sqlity.Storage.Catalog;
 namespace Sqlity.Query.Planner;
 
 /// <summary>
-/// Rule-based query planner. Scores candidate indexes by leading equality column coverage
-/// and selects the best index seek, falling back to a full scan when no index helps.
+/// Cost-based query planner. When table statistics are available (via <c>ANALYZE</c>),
+/// selects the access path with the lowest estimated row count using a simple selectivity
+/// model: <c>seek cost = rowCount × Π(1 / ndv_col_i)</c>. Falls back to the rule-based
+/// leading-equality-column scoring when no statistics have been collected.
 /// </summary>
 internal sealed class QueryPlanner
 {
@@ -34,9 +36,22 @@ internal sealed class QueryPlanner
         var atoms = filter is not null ? FlattenAnds(filter) : [];
         var indexes = _storage.GetIndexesForTable(table.TableName);
 
+        // Lazily collect statistics on first plan for this table so callers never need to
+        // run ANALYZE manually. Uses persist:false so a read-only SELECT never has hidden
+        // write side-effects; stats persist to disk only via explicit ANALYZE statements.
+        if (_storage.GetStatistics(table.TableName) is null)
+            _storage.AnalyzeTable(table.TableName, persist: false);
+        var stats = _storage.GetStatistics(table.TableName);
+
+        // Cost-based selection is only useful when the table has rows; with 0 rows every
+        // plan costs the same, so fall back to rule-based scoring to preserve deterministic
+        // index selection and avoid penalising queries on freshly-created tables.
+        var useCostModel = stats is not null && stats.RowCount > 0;
+
         // ── Try to satisfy WHERE via an index seek ──────────────────────────────
         IndexInfo? bestSeekIndex = null;
-        int bestSeekScore = 0;
+        double bestSeekCost = double.MaxValue;
+        int bestSeekScore = 0; // used as tiebreaker / fallback when no stats
         IndexSeekRange? bestRange = null;
         List<WhereExpression>? bestPostFilter = null;
 
@@ -45,20 +60,47 @@ internal sealed class QueryPlanner
             foreach (var index in indexes)
             {
                 var (score, range, postFilter) = ScoreIndex(table, index, atoms);
-                if (score > bestSeekScore)
+                if (score == 0)
+                    continue;
+
+                if (useCostModel)
                 {
-                    bestSeekScore = score;
-                    bestSeekIndex = index;
-                    bestRange = range;
-                    bestPostFilter = postFilter;
+                    var cost = EstimateSeekCost(stats!, index, table, atoms, score);
+                    if (cost < bestSeekCost || (cost == bestSeekCost && score > bestSeekScore))
+                    {
+                        bestSeekCost = cost;
+                        bestSeekScore = score;
+                        bestSeekIndex = index;
+                        bestRange = range;
+                        bestPostFilter = postFilter;
+                    }
+                }
+                else
+                {
+                    // No statistics — fall back to rule-based scoring.
+                    if (score > bestSeekScore)
+                    {
+                        bestSeekScore = score;
+                        bestSeekIndex = index;
+                        bestRange = range;
+                        bestPostFilter = postFilter;
+                    }
                 }
             }
         }
 
-        if (bestSeekIndex is not null && bestRange is not null)
+        // When cost model is active, only prefer the index if its estimated cost beats a full scan.
+        bool useIndexSeek = bestSeekIndex is not null && bestRange is not null;
+        if (useIndexSeek && useCostModel)
+        {
+            var fullScanCost = (double)stats!.RowCount;
+            useIndexSeek = bestSeekCost < fullScanCost;
+        }
+
+        if (useIndexSeek)
         {
             var postFilterExpr = bestPostFilter is { Count: > 0 } ? CombineAnds(bestPostFilter) : null;
-            return new LogicalIndexSeek(table, bestSeekIndex, bestRange, postFilterExpr);
+            return new LogicalIndexSeek(table, bestSeekIndex!, bestRange!, postFilterExpr);
         }
 
         // ── Try to satisfy ORDER BY via an ordered index scan ──────────────────
@@ -68,7 +110,6 @@ internal sealed class QueryPlanner
             {
                 if (IndexSatisfiesOrderBy(table, index, orderBy))
                 {
-                    // All ORDER BY terms have the same direction; use the first term's direction.
                     var descending = orderBy[0].Descending;
                     return new LogicalIndexOrderedScan(table, index, filter, descending);
                 }
@@ -76,6 +117,29 @@ internal sealed class QueryPlanner
         }
 
         return new LogicalScan(table, filter);
+    }
+
+    /// <summary>
+    /// Estimates the number of rows returned by an index seek using per-column NDV statistics.
+    /// For each leading equality-covered column, multiplies the selectivity factor (1/ndv).
+    /// </summary>
+    private static double EstimateSeekCost(
+        Storage.Statistics.TableStatistics stats,
+        IndexInfo index,
+        TableInfo table,
+        IReadOnlyList<WhereExpression> atoms,
+        int coveredLeadingColumns)
+    {
+        var cost = (double)stats.RowCount;
+
+        for (var i = 0; i < coveredLeadingColumns && i < index.Columns.Count; i++)
+        {
+            var colName = index.Columns[i];
+            if (stats.ColumnNdv.TryGetValue(colName, out var ndv) && ndv > 1)
+                cost /= ndv;
+        }
+
+        return cost;
     }
 
     /// <summary>
@@ -91,7 +155,6 @@ internal sealed class QueryPlanner
         if (orderBy.Count > index.Columns.Count)
             return false;
 
-        // All terms must share the same direction.
         var firstDescending = orderBy[0].Descending;
         for (var i = 1; i < orderBy.Count; i++)
         {
@@ -99,13 +162,11 @@ internal sealed class QueryPlanner
                 return false;
         }
 
-        // ORDER BY columns must match the index's leading columns (order and name).
         for (var i = 0; i < orderBy.Count; i++)
         {
             if (!string.Equals(orderBy[i].Column.ColumnName, index.Columns[i], StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            // Column must actually exist in the table.
             if (!table.Schema.TryGetColumnOrdinal(orderBy[i].Column.ColumnName, out _))
                 return false;
         }
@@ -137,7 +198,6 @@ internal sealed class QueryPlanner
             .Select(c => table.Schema.GetColumnOrdinal(c))
             .ToList();
 
-        // Collect equality predicates by column ordinal.
         var equalityByOrdinal = new Dictionary<int, object?>();
         foreach (var atom in atoms)
         {
@@ -149,7 +209,6 @@ internal sealed class QueryPlanner
             }
         }
 
-        // Count contiguous leading columns covered by equality.
         int score = 0;
         var matchedOrdinals = new List<int>(columnOrdinals.Count);
         var matchedValues = new List<object?>(columnOrdinals.Count);
@@ -167,7 +226,6 @@ internal sealed class QueryPlanner
         if (score == 0)
             return (0, null, new List<WhereExpression>(atoms));
 
-        // Build a fake full-row array with matched values at their ordinal positions.
         var fakeRow = new object?[table.Schema.Columns.Count];
         for (int i = 0; i < matchedOrdinals.Count; i++)
             fakeRow[matchedOrdinals[i]] = matchedValues[i];

@@ -3,7 +3,7 @@ namespace Sqlity.Core;
 public static class DbConstants
 {
     public const int PageSize = 4096;
-    public const uint FormatVersion = 3;
+    public const uint FormatVersion = 4;
     public const uint HeaderPageNumber = 0;
 
     public static ReadOnlySpan<byte> Magic => "SQLITYDB"u8;

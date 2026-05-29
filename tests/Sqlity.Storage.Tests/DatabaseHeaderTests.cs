@@ -17,7 +17,8 @@ public sealed class DatabaseHeaderTests
             3,
             5,
             IndexCatalogRootPageId: 11,
-            ViewCatalogRootPageId: 0);
+            ViewCatalogRootPageId: 0,
+            StatsCatalogRootPageId: 0);
 
         Span<byte> buffer = stackalloc byte[DatabaseHeader.Size];
         original.WriteTo(buffer);

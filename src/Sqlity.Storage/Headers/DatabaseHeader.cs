@@ -12,7 +12,8 @@ public readonly record struct DatabaseHeader(
     uint FreePageCount,
     uint SchemaVersion,
     uint IndexCatalogRootPageId,
-    uint ViewCatalogRootPageId)
+    uint ViewCatalogRootPageId,
+    uint StatsCatalogRootPageId)
 {
     public const int Size = 64;
 
@@ -26,7 +27,8 @@ public readonly record struct DatabaseHeader(
             FreePageCount: 0,
             SchemaVersion: 1,
             IndexCatalogRootPageId: 0,
-            ViewCatalogRootPageId: 0);
+            ViewCatalogRootPageId: 0,
+            StatsCatalogRootPageId: 0);
 
     public void WriteTo(Span<byte> destination)
     {
@@ -48,6 +50,7 @@ public readonly record struct DatabaseHeader(
         BinaryPrimitives.WriteUInt32LittleEndian(destination[32..36], SchemaVersion);
         BinaryPrimitives.WriteUInt32LittleEndian(destination[36..40], IndexCatalogRootPageId);
         BinaryPrimitives.WriteUInt32LittleEndian(destination[40..44], ViewCatalogRootPageId);
+        BinaryPrimitives.WriteUInt32LittleEndian(destination[44..48], StatsCatalogRootPageId);
     }
 
     public static DatabaseHeader ReadFrom(ReadOnlySpan<byte> source)
@@ -76,6 +79,9 @@ public readonly record struct DatabaseHeader(
         var viewCatalogRootPageId = formatVersion >= 3
             ? BinaryPrimitives.ReadUInt32LittleEndian(source[40..44])
             : 0u;
+        var statsCatalogRootPageId = formatVersion >= 4
+            ? BinaryPrimitives.ReadUInt32LittleEndian(source[44..48])
+            : 0u;
 
         if (pageSize != DbConstants.PageSize)
         {
@@ -96,6 +102,7 @@ public readonly record struct DatabaseHeader(
             freePageCount,
             schemaVersion,
             indexCatalogRootPageId,
-            viewCatalogRootPageId);
+            viewCatalogRootPageId,
+            statsCatalogRootPageId);
     }
 }

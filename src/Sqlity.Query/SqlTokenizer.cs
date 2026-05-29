@@ -183,6 +183,7 @@ internal static class SqlTokenizer
             "DENSE_RANK" => SqlTokenKind.DenseRank,
             "LAG" => SqlTokenKind.Lag,
             "LEAD" => SqlTokenKind.Lead,
+            "ANALYZE" => SqlTokenKind.Analyze,
             _ => SqlTokenKind.Identifier
         };
 
@@ -404,4 +405,5 @@ internal enum SqlTokenKind
     DenseRank = 106,
     Lag = 107,
     Lead = 108,
+    Analyze = 109,
 }

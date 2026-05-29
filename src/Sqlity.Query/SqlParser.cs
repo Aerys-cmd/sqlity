@@ -29,6 +29,7 @@ internal sealed class SqlParser
             SqlTokenKind.Alter => ParseAlter(),
             SqlTokenKind.Truncate => ParseTruncate(),
             SqlTokenKind.With => ParseCteStatement(),
+            SqlTokenKind.Analyze => ParseAnalyze(),
             _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
@@ -58,6 +59,7 @@ internal sealed class SqlParser
                 SqlTokenKind.Alter => ParseAlter(),
                 SqlTokenKind.Truncate => ParseTruncate(),
                 SqlTokenKind.With => ParseCteStatement(),
+                SqlTokenKind.Analyze => ParseAnalyze(),
                 _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
             };
 
@@ -242,6 +244,29 @@ internal sealed class SqlParser
         var tableName = ExpectIdentifier("Expected a table name after TRUNCATE.");
         return new TruncateTableStatement(tableName);
     }
+
+    /// <summary>
+    /// Parses <c>ANALYZE [table_name]</c>. When the optional table name is omitted, statistics
+    /// are collected for all tables.
+    /// </summary>
+    private AnalyzeStatement ParseAnalyze()
+    {
+        Expect(SqlTokenKind.Analyze);
+        // Optional table name — if the next token is a semicolon, EOF, or not an identifier/keyword
+        // that could be a table name, treat it as ANALYZE ALL.
+        string? tableName = null;
+        if (Peek().Kind == SqlTokenKind.Identifier || IsUnreservedKeyword(Peek().Kind))
+            tableName = Advance().Lexeme;
+        return new AnalyzeStatement(tableName);
+    }
+
+    /// <summary>
+    /// Returns true for keywords that are commonly used as table or column names and are safe
+    /// to treat as identifiers in positions where a name is expected.
+    /// </summary>
+    private static bool IsUnreservedKeyword(SqlTokenKind kind) => kind is
+        SqlTokenKind.Table or SqlTokenKind.Index or SqlTokenKind.View or
+        SqlTokenKind.Key or SqlTokenKind.Column;
 
     private CreateViewStatement ParseCreateView()
     {
@@ -1160,6 +1185,12 @@ internal sealed record AlterTableRenameColumnStatement(string TableName, string 
 internal sealed record TruncateTableStatement(string TableName) : SqlStatement;
 
 internal sealed record CreateViewStatement(string ViewName, string SelectSql) : SqlStatement;
+
+/// <summary>
+/// Represents <c>ANALYZE [table_name]</c>. When <see cref="TableName"/> is <see langword="null"/>,
+/// statistics are collected for every table in the database.
+/// </summary>
+internal sealed record AnalyzeStatement(string? TableName) : SqlStatement;
 
 internal sealed record SelectStatement(string TableName, IReadOnlyList<SelectItem>? Columns, WhereExpression? Filter, IReadOnlyList<JoinClause> Joins, IReadOnlyList<string>? GroupBy, HavingExpression? Having, IReadOnlyList<OrderByTerm>? OrderBy, int? Limit, int? Offset, bool IsDistinct = false) : SqlStatement;
 

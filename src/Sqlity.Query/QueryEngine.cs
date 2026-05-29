@@ -146,6 +146,7 @@ public sealed class QueryEngine : IDisposable
                 CreateViewStatement createView => ExecuteCreateView(createView),
                 SetOperationStatement setOp => ExecuteSetOperation(setOp),
                 CteStatement cte => ExecuteCte(cte),
+                AnalyzeStatement analyze => ExecuteAnalyze(analyze),
                 _ => throw new InvalidOperationException($"Unsupported statement type {statement.GetType().Name}.")
             };
 
@@ -254,6 +255,15 @@ public sealed class QueryEngine : IDisposable
     private QueryExecutionResult ExecuteTruncateTable(TruncateTableStatement statement)
     {
         _storage.TruncateTable(statement.TableName);
+        return QueryExecutionResult.Empty(rowsAffected: 0);
+    }
+
+    private QueryExecutionResult ExecuteAnalyze(AnalyzeStatement statement)
+    {
+        if (statement.TableName is not null)
+            _storage.AnalyzeTable(statement.TableName);
+        else
+            _storage.AnalyzeAll();
         return QueryExecutionResult.Empty(rowsAffected: 0);
     }
 

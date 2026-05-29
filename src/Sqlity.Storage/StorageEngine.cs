@@ -1,9 +1,11 @@
+using Sqlity.Core;
 using Sqlity.Storage.Abstractions;
 using Sqlity.Storage.BTree;
 using Sqlity.Storage.Catalog;
 using Sqlity.Storage.IO;
 using Sqlity.Storage.Pages;
 using Sqlity.Storage.Rows;
+using Sqlity.Storage.Statistics;
 
 namespace Sqlity.Storage;
 
@@ -14,7 +16,14 @@ public sealed class StorageEngine : IDisposable
     private readonly CatalogStore _catalog;
     private IndexCatalogStore? _indexCatalog;
     private ViewCatalogStore? _viewCatalog;
+    private StatsCatalogStore? _statsCatalog;
     private readonly RowSerializer _rowSerializer = new();
+
+    // Write-through in-memory cache loaded from the stats catalog page on open.
+    // Explicit ANALYZE writes to both the cache and the catalog page; auto-analyze
+    // (triggered by the query planner) writes only to the cache.
+    private readonly Dictionary<string, TableStatistics> _statistics =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public StorageEngine(IPager pager)
         : this(pager, ownsPager: false)
@@ -34,6 +43,11 @@ public sealed class StorageEngine : IDisposable
             _indexCatalog = new IndexCatalogStore(_pager, header.IndexCatalogRootPageId);
         if (header.ViewCatalogRootPageId != 0)
             _viewCatalog = new ViewCatalogStore(_pager, header.ViewCatalogRootPageId);
+        if (header.StatsCatalogRootPageId != 0)
+        {
+            _statsCatalog = new StatsCatalogStore(_pager, header.StatsCatalogRootPageId);
+            LoadStatsFromCatalog();
+        }
     }
 
     /// <summary>
@@ -85,6 +99,88 @@ public sealed class StorageEngine : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
         return _indexCatalog?.GetByTable(tableName) ?? [];
+    }
+
+    // ── Statistics ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Scans <paramref name="tableName"/> and caches per-table row count and per-column
+    /// distinct-value estimates.
+    /// </summary>
+    /// <param name="tableName">Table to analyze.</param>
+    /// <param name="persist">
+    /// When <see langword="true"/> (default), stats are written to the
+    /// <c>__sqlity_stat1</c> catalog page so they survive connection close and process
+    /// restart. Pass <see langword="false"/> for in-memory-only collection (used by the
+    /// query planner's lazy auto-analyze, which must not have hidden write side-effects
+    /// during a SELECT).
+    /// </param>
+    public void AnalyzeTable(string tableName, bool persist = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        var table = GetTable(tableName);
+        var cells = new BPlusTree(_pager, table.RootPageId).ReadAll();
+
+        var ndvSets = table.Schema.Columns
+            .Select(_ => new HashSet<object?>())
+            .ToArray();
+
+        foreach (var cell in cells)
+        {
+            var row = _rowSerializer.Read(table.Schema, cell.Payload);
+            for (var i = 0; i < row.Length; i++)
+                ndvSets[i].Add(row[i]);
+        }
+
+        var ndv = table.Schema.Columns
+            .Select((col, i) => (col.Name, (long)ndvSets[i].Count))
+            .ToDictionary(t => t.Name, t => t.Item2, StringComparer.OrdinalIgnoreCase);
+
+        var stats = new TableStatistics(cells.Count, ndv);
+        _statistics[tableName] = stats;
+
+        if (persist)
+            PersistStats(tableName, stats);
+    }
+
+    /// <summary>Analyzes every user table. Equivalent to running <c>ANALYZE</c> without a table name.</summary>
+    public void AnalyzeAll()
+    {
+        foreach (var table in _catalog.ReadTables())
+            AnalyzeTable(table.TableName);
+    }
+
+    /// <summary>Returns the most recently collected statistics for <paramref name="tableName"/>, or <see langword="null"/> if <c>ANALYZE</c> has not been run yet.</summary>
+    public TableStatistics? GetStatistics(string tableName) =>
+        _statistics.TryGetValue(tableName, out var stats) ? stats : null;
+
+    private void LoadStatsFromCatalog()
+    {
+        foreach (var (tableName, stats) in _statsCatalog!.ReadAll())
+            _statistics[tableName] = stats;
+    }
+
+    /// <summary>
+    /// Writes stats to the on-disk catalog (best-effort: failure is silently swallowed
+    /// so a full catalog page never crashes a SELECT that triggered auto-analyze).
+    /// </summary>
+    private void PersistStats(string tableName, TableStatistics stats)
+    {
+        try
+        {
+            EnsureStatsCatalog().Upsert(tableName, stats);
+        }
+        catch (Exception)
+        {
+            // Best-effort: keep in-memory stats but don't crash on persistence failure.
+        }
+    }
+
+    private void InvalidateStats(string tableName)
+    {
+        _statistics.Remove(tableName);
+        _statsCatalog?.Delete(tableName);
     }
 
     public bool InTransaction => _pager.InTransaction;
@@ -205,6 +301,9 @@ public sealed class StorageEngine : IDisposable
         // Remove the table from the catalog.
         _catalog.Delete(table.TableId);
 
+        // Invalidate any persisted stats for this table.
+        InvalidateStats(tableName);
+
         IncrementSchemaVersion();
     }
 
@@ -228,6 +327,11 @@ public sealed class StorageEngine : IDisposable
             foreach (var index in _indexCatalog.GetByTable(oldName))
                 _indexCatalog.UpdateEntry(index with { TableName = newName });
         }
+
+        // Migrate stats to the new table name.
+        if (_statistics.Remove(oldName, out var statsToRename))
+            _statistics[newName] = statsToRename;
+        _statsCatalog?.Rename(oldName, newName);
 
         IncrementSchemaVersion();
     }
@@ -256,6 +360,9 @@ public sealed class StorageEngine : IDisposable
         var newColumns = table.Schema.Columns.Append(column).ToArray();
         var newSchema = new TableSchema(tableName, newColumns, table.Schema.PrimaryKeyOrdinal);
         _catalog.Update(new TableInfo(table.TableId, tableName, table.RootPageId, newSchema));
+
+        // Column set changed — existing stats are stale.
+        InvalidateStats(tableName);
 
         IncrementSchemaVersion();
     }
@@ -291,6 +398,9 @@ public sealed class StorageEngine : IDisposable
                 _indexCatalog.UpdateEntry(index with { Columns = updatedColumns });
             }
         }
+
+        // Column name changed — NDV keys are stale.
+        InvalidateStats(tableName);
 
         IncrementSchemaVersion();
     }
@@ -481,6 +591,9 @@ public sealed class StorageEngine : IDisposable
         var newRoot = _pager.AllocatePage(PageType.TableLeaf);
         _catalog.Update(new TableInfo(table.TableId, table.TableName, newRoot, table.Schema));
 
+        // All rows gone — any persisted stats are now badly misleading.
+        InvalidateStats(tableName);
+
         IncrementSchemaVersion();
     }
 
@@ -566,6 +679,23 @@ public sealed class StorageEngine : IDisposable
         _pager.WriteDatabaseHeader(header with { ViewCatalogRootPageId = rootPageId });
         _viewCatalog = new ViewCatalogStore(_pager, rootPageId);
         return _viewCatalog;
+    }
+
+    private StatsCatalogStore EnsureStatsCatalog()
+    {
+        if (_statsCatalog is not null)
+            return _statsCatalog;
+
+        var rootPageId = _pager.AllocatePage(PageType.TableLeaf);
+        var header = _pager.ReadDatabaseHeader();
+        // Bump format version to 4 so StatsCatalogRootPageId is round-tripped on re-open.
+        _pager.WriteDatabaseHeader(header with
+        {
+            StatsCatalogRootPageId = rootPageId,
+            FormatVersion = Math.Max(header.FormatVersion, DbConstants.FormatVersion)
+        });
+        _statsCatalog = new StatsCatalogStore(_pager, rootPageId);
+        return _statsCatalog;
     }
 
     private static void InsertIndexEntry(
