@@ -4,6 +4,7 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Sqlity.Cli/Sqlity.Cli.csproj" />
+    <Project Path="samples/Sqlity.Studio/Sqlity.Studio.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Sqlity.Ado/Sqlity.Ado.csproj" />

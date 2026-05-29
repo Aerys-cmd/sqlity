@@ -1,0 +1,80 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Sqlity.Studio.Views.SchemaViewerView">
+
+    <Border BorderThickness="0,1,0,0"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+        <Grid>
+            <!-- Empty state -->
+            <TextBlock IsVisible="{Binding !HasContent}"
+                       Text="Select a table to view its schema."
+                       Opacity="0.4" FontSize="11"
+                       VerticalAlignment="Center" HorizontalAlignment="Center"
+                       TextWrapping="Wrap" Margin="8" />
+
+            <!-- Table schema content -->
+            <ScrollViewer IsVisible="{Binding HasContent}">
+                <StackPanel Spacing="2" Margin="8,6">
+
+                    <TextBlock Text="{Binding TableName}"
+                               FontWeight="Bold" FontSize="12" Margin="0,0,0,4" />
+
+                    <!-- Columns -->
+                    <TextBlock Text="COLUMNS" FontSize="9" FontWeight="Bold"
+                               Opacity="0.5" LetterSpacing="1.5" Margin="0,2,0,2" />
+                    <ItemsControl ItemsSource="{Binding Columns}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,1">
+                                    <TextBlock Grid.Column="0"
+                                               Text="🔑 " FontSize="10"
+                                               IsVisible="{Binding IsPrimaryKey}"
+                                               VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding Name}"
+                                               FontFamily="Courier New, Monospace"
+                                               FontSize="11" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding Type}"
+                                               Opacity="0.6" FontSize="10"
+                                               Margin="6,0,4,0" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="3"
+                                               Text="NOT NULL" FontSize="9"
+                                               Opacity="0.5"
+                                               IsVisible="{Binding !IsNullable}"
+                                               VerticalAlignment="Center" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <!-- Indexes -->
+                    <TextBlock Text="INDEXES" FontSize="9" FontWeight="Bold"
+                               Opacity="0.5" LetterSpacing="1.5"
+                               Margin="0,6,0,2"
+                               IsVisible="{Binding HasIndexes}" />
+                    <ItemsControl ItemsSource="{Binding Indexes}"
+                                  IsVisible="{Binding HasIndexes}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,1">
+                                    <TextBlock Text="{Binding Name}"
+                                               FontFamily="Courier New, Monospace"
+                                               FontSize="11" />
+                                    <TextBlock Text="UNIQUE" FontSize="9"
+                                               Opacity="0.6"
+                                               IsVisible="{Binding IsUnique}" />
+                                    <TextBlock Text="{Binding Columns}"
+                                               Opacity="0.5" FontSize="10" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </Border>
+
+</UserControl>
+

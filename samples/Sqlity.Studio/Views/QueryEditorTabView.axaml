@@ -1,0 +1,49 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:avaloniaEdit="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
+             xmlns:v="clr-namespace:Sqlity.Studio.Views"
+             x:Class="Sqlity.Studio.Views.QueryEditorTabView">
+
+    <Grid RowDefinitions="*,5,*">
+
+        <!-- SQL Editor -->
+        <avaloniaEdit:TextEditor
+            x:Name="SqlEditor"
+            Grid.Row="0"
+            FontFamily="Courier New, Monospace"
+            FontSize="13"
+            ShowLineNumbers="True"
+            HorizontalScrollBarVisibility="Auto"
+            VerticalScrollBarVisibility="Auto"
+            WordWrap="False" />
+
+        <GridSplitter Grid.Row="1" ResizeDirection="Rows"
+                      Background="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                      Opacity="0.3" />
+
+        <!-- Results -->
+        <Grid Grid.Row="2" RowDefinitions="Auto,*">
+
+            <!-- Execute toolbar -->
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10"
+                        Margin="6,4">
+                <Button Content="▶  Execute"
+                        Command="{Binding ExecuteCommand}"
+                        IsEnabled="{Binding !IsBusy}" />
+                <TextBlock Text="Ctrl+Enter" VerticalAlignment="Center"
+                           Opacity="0.4" FontSize="11" />
+                <TextBlock Text="|" Opacity="0.3" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding Result.StatusText}"
+                           VerticalAlignment="Center" FontSize="12" Opacity="0.8" />
+                <!-- Busy spinner text -->
+                <TextBlock Text="Executing…" VerticalAlignment="Center"
+                           FontSize="11" Opacity="0.6"
+                           IsVisible="{Binding IsBusy}" />
+            </StackPanel>
+
+            <v:ResultGridView Grid.Row="1" DataContext="{Binding Result}" />
+        </Grid>
+
+    </Grid>
+
+</UserControl>

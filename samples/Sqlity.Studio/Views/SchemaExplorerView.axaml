@@ -1,0 +1,27 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Sqlity.Studio.Views.SchemaExplorerView">
+
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Padding="8,6" BorderThickness="0,0,0,1"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+            <TextBlock Text="SCHEMA EXPLORER" FontSize="10" FontWeight="Bold"
+                       Opacity="0.6" LetterSpacing="1.5" />
+        </Border>
+
+        <TreeView x:Name="SchemaTree"
+                  ItemsSource="{Binding Nodes}"
+                  SelectionChanged="OnSelectionChanged"
+                  DoubleTapped="OnDoubleTapped"
+                  Background="Transparent">
+            <TreeView.ItemTemplate>
+                <TreeDataTemplate ItemsSource="{Binding Children}">
+                    <TextBlock Text="{Binding Name}"
+                               Padding="2,1"
+                               ToolTip.Tip="{Binding Extra}" />
+                </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+        </TreeView>
+    </DockPanel>
+
+</UserControl>

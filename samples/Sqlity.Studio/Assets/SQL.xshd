@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SyntaxDefinition name="SQL"
+  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+
+  <Color name="Comment"   foreground="#608B4E" fontStyle="italic" />
+  <Color name="String"    foreground="#CE9178" />
+  <Color name="Keyword"   foreground="#569CD6" fontWeight="bold" />
+  <Color name="Function"  foreground="#DCDCAA" />
+  <Color name="Number"    foreground="#B5CEA8" />
+
+  <RuleSet ignoreCase="true">
+
+    <Span color="Comment" begin="--" end="\n" />
+    <Span color="Comment" multiline="true" begin="/\*" end="\*/" />
+    <Span color="String"  begin="'" end="'" />
+    <Span color="String"  begin="&quot;" end="&quot;" />
+
+    <Keywords color="Keyword">
+      <Word>SELECT</Word><Word>FROM</Word><Word>WHERE</Word>
+      <Word>INSERT</Word><Word>INTO</Word><Word>VALUES</Word>
+      <Word>UPDATE</Word><Word>SET</Word><Word>DELETE</Word>
+      <Word>CREATE</Word><Word>TABLE</Word><Word>INDEX</Word>
+      <Word>DROP</Word><Word>ALTER</Word><Word>TRUNCATE</Word>
+      <Word>ADD</Word><Word>COLUMN</Word><Word>RENAME</Word>
+      <Word>AND</Word><Word>OR</Word><Word>NOT</Word>
+      <Word>NULL</Word><Word>IS</Word><Word>IN</Word>
+      <Word>JOIN</Word><Word>LEFT</Word><Word>INNER</Word>
+      <Word>OUTER</Word><Word>FULL</Word><Word>CROSS</Word><Word>ON</Word>
+      <Word>ORDER</Word><Word>BY</Word><Word>ASC</Word><Word>DESC</Word>
+      <Word>LIMIT</Word><Word>OFFSET</Word>
+      <Word>GROUP</Word><Word>HAVING</Word>
+      <Word>BEGIN</Word><Word>COMMIT</Word><Word>ROLLBACK</Word><Word>TRANSACTION</Word>
+      <Word>PRIMARY</Word><Word>KEY</Word><Word>UNIQUE</Word>
+      <Word>DISTINCT</Word><Word>AS</Word>
+      <Word>VIEW</Word><Word>ANALYZE</Word>
+      <Word>INTEGER</Word><Word>TEXT</Word><Word>REAL</Word><Word>BLOB</Word>
+      <Word>BOOLEAN</Word><Word>DATE</Word><Word>DATETIME</Word>
+      <Word>WITH</Word><Word>UNION</Word><Word>INTERSECT</Word><Word>EXCEPT</Word>
+      <Word>CASE</Word><Word>WHEN</Word><Word>THEN</Word><Word>ELSE</Word><Word>END</Word>
+      <Word>AUTOINCREMENT</Word><Word>DEFAULT</Word>
+      <Word>TRUE</Word><Word>FALSE</Word>
+      <Word>LIKE</Word><Word>BETWEEN</Word><Word>EXISTS</Word>
+      <Word>ALL</Word><Word>ANY</Word><Word>SOME</Word>
+      <Word>OVER</Word><Word>PARTITION</Word><Word>ROWS</Word><Word>RANGE</Word>
+    </Keywords>
+
+    <Keywords color="Function">
+      <Word>COUNT</Word><Word>SUM</Word><Word>AVG</Word>
+      <Word>MIN</Word><Word>MAX</Word>
+      <Word>ROW_NUMBER</Word><Word>RANK</Word><Word>DENSE_RANK</Word>
+      <Word>COALESCE</Word><Word>IFNULL</Word><Word>NULLIF</Word>
+      <Word>UPPER</Word><Word>LOWER</Word><Word>LENGTH</Word>
+      <Word>SUBSTR</Word><Word>TRIM</Word><Word>REPLACE</Word>
+      <Word>ABS</Word><Word>ROUND</Word><Word>CEIL</Word><Word>FLOOR</Word>
+    </Keywords>
+
+    <Rule color="Number">\b[0-9]+(\.[0-9]+)?\b</Rule>
+
+  </RuleSet>
+</SyntaxDefinition>

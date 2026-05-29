@@ -1,0 +1,48 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Sqlity.Studio.Views.ResultGridView">
+
+    <Grid RowDefinitions="*,Auto">
+
+        <!-- DataGrid is built dynamically in code-behind -->
+        <DataGrid x:Name="ResultDataGrid"
+                  Grid.Row="0"
+                  IsReadOnly="True"
+                  AutoGenerateColumns="False"
+                  CanUserSortColumns="True"
+                  CanUserResizeColumns="True"
+                  ClipboardCopyMode="IncludeHeader"
+                  GridLinesVisibility="All"
+                  BorderThickness="0"
+                  IsVisible="{Binding HasResults}"
+                  FontFamily="Courier New, Monospace"
+                  FontSize="12" />
+
+        <!-- Error display -->
+        <ScrollViewer Grid.Row="0"
+                      IsVisible="{Binding HasError}">
+            <TextBlock Text="{Binding ErrorText}"
+                       Foreground="Salmon" TextWrapping="Wrap"
+                       Margin="8" FontFamily="Courier New, Monospace"
+                       FontSize="12" />
+        </ScrollViewer>
+
+        <!-- Empty state -->
+        <TextBlock Grid.Row="0"
+                   IsVisible="{Binding IsEmpty}"
+                   Text="No results. Execute a query to see output here."
+                   Opacity="0.4" FontSize="11"
+                   VerticalAlignment="Center" HorizontalAlignment="Center" />
+
+        <!-- Footer: row count -->
+        <Border Grid.Row="1" Padding="6,3"
+                BorderThickness="0,1,0,0"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                IsVisible="{Binding HasResults}">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="{Binding RowCountText}" FontSize="11" Opacity="0.7" />
+            </StackPanel>
+        </Border>
+    </Grid>
+
+</UserControl>

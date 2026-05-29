@@ -1,0 +1,144 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Sqlity.Studio.ViewModels"
+        xmlns:v="clr-namespace:Sqlity.Studio.Views"
+        x:Class="Sqlity.Studio.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="{Binding WindowTitle}"
+        Width="1200" Height="750"
+        MinWidth="800" MinHeight="500">
+
+    <DockPanel>
+
+        <!-- Menu bar -->
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Open Database…" Click="OnOpenDatabase_Click" />
+                <MenuItem Header="_New Database…"  Click="OnCreateDatabase_Click" />
+                <Separator />
+                <MenuItem Header="Open _Recent"
+                          ItemsSource="{Binding RecentDatabases}">
+                    <MenuItem.ItemTemplate>
+                        <DataTemplate>
+                            <MenuItem Header="{Binding DisplayName}"
+                                      Command="{Binding OpenCommand}"
+                                      ToolTip.Tip="{Binding Path}" />
+                        </DataTemplate>
+                    </MenuItem.ItemTemplate>
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="E_xit" Click="OnExit_Click" />
+            </MenuItem>
+            <MenuItem Header="_Query">
+                <MenuItem Header="_New Tab" Command="{Binding AddTabCommand}" />
+                <MenuItem Header="_Execute  Ctrl+Enter"
+                          Command="{Binding SelectedTab.ExecuteCommand}" />
+            </MenuItem>
+        </Menu>
+
+        <!-- Status bar -->
+        <Border DockPanel.Dock="Bottom" Padding="8,4"
+                BorderThickness="0,1,0,0"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}">
+            <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Grid.Column="0"
+                           Text="{Binding StatusBarText}"
+                           FontSize="11" Opacity="0.7"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="1"
+                           Text="{Binding TransactionStatus}"
+                           FontSize="11" Foreground="Orange"
+                           IsVisible="{Binding InTransaction}"
+                           Margin="8,0,0,0" />
+            </Grid>
+        </Border>
+
+        <!-- Main content -->
+        <Grid ColumnDefinitions="260,4,*">
+
+            <!-- LEFT PANEL: Schema explorer + schema viewer -->
+            <Grid Grid.Column="0" RowDefinitions="*,5,200">
+
+                <v:SchemaExplorerView Grid.Row="0"
+                                      DataContext="{Binding SchemaExplorer}" />
+
+                <GridSplitter Grid.Row="1" ResizeDirection="Rows"
+                              Background="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                              Opacity="0.3" />
+
+                <v:SchemaViewerView Grid.Row="2"
+                                    DataContext="{Binding SchemaViewer}" />
+
+            </Grid>
+
+            <!-- Column splitter -->
+            <GridSplitter Grid.Column="1" ResizeDirection="Columns"
+                          Background="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                          Opacity="0.3" />
+
+            <!-- RIGHT PANEL: Welcome or query editor -->
+            <Grid Grid.Column="2">
+
+                <!-- No-database welcome screen -->
+                <StackPanel IsVisible="{Binding IsNoDatabaseOpen}"
+                            VerticalAlignment="Center" HorizontalAlignment="Center"
+                            Spacing="16">
+                    <TextBlock Text="Sqlity Studio" FontSize="28" FontWeight="Bold"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="A lightweight GUI for the Sqlity embedded database."
+                               FontSize="14" Opacity="0.6" HorizontalAlignment="Center" />
+                    <StackPanel Orientation="Horizontal" Spacing="12"
+                                HorizontalAlignment="Center">
+                        <Button Content="Open Database…" Click="OnOpenDatabase_Click"
+                                Padding="16,8" />
+                        <Button Content="New Database…"  Click="OnCreateDatabase_Click"
+                                Padding="16,8" />
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Query editor area -->
+                <Grid IsVisible="{Binding IsDatabaseOpen}"
+                      RowDefinitions="Auto,*">
+
+                    <!-- Tab toolbar -->
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="4"
+                                Margin="4,4,4,0">
+                        <Button Content="+ New Tab" Command="{Binding AddTabCommand}"
+                                Padding="8,4" />
+                    </StackPanel>
+
+                    <!-- Tab control -->
+                    <TabControl Grid.Row="1"
+                                ItemsSource="{Binding Tabs}"
+                                SelectedItem="{Binding SelectedTab}">
+
+                        <!-- Tab header: title + close button -->
+                        <TabControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:QueryEditorTabViewModel">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding Header}"
+                                               VerticalAlignment="Center" />
+                                    <Button Content="×"
+                                            Padding="4,1"
+                                            FontSize="11"
+                                            Click="OnCloseTabButton_Click"
+                                            Background="Transparent"
+                                            VerticalAlignment="Center" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </TabControl.ItemTemplate>
+
+                        <!-- Tab content -->
+                        <TabControl.ContentTemplate>
+                            <DataTemplate>
+                                <v:QueryEditorTabView DataContext="{Binding}" />
+                            </DataTemplate>
+                        </TabControl.ContentTemplate>
+
+                    </TabControl>
+                </Grid>
+            </Grid>
+        </Grid>
+    </DockPanel>
+
+</Window>

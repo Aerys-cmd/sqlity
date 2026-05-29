@@ -273,3 +273,34 @@ For a larger set of executable command/output examples that is generated from te
 ```bash
 dotnet test Sqlity.slnx
 ```
+
+## Sqlity Studio
+
+Sqlity Studio is a lightweight developer GUI for the Sqlity embedded database engine, built with .NET 10, Avalonia 11, and CommunityToolkit.Mvvm.
+
+### Features
+
+| Feature | Description |
+|---|---|
+| **Database opening** | Open or create `.sqlity` files; recent database list; auto-reopen last database on startup |
+| **Schema explorer** | Left-panel tree showing Tables, Views, and Indexes populated directly from the Sqlity storage engine |
+| **Table browser** | Double-click a table to instantly run `SELECT * … ORDER BY <pk> LIMIT 100` and display results in a grid |
+| **SQL editor** | Multi-tab query editor with SQL syntax highlighting (AvaloniaEdit), Ctrl+Enter execution |
+| **Results grid** | Column headers, sortable rows, clipboard copy, execution time and row count |
+| **Schema viewer** | Inspect columns, types, nullability, primary key, and indexes for any selected table |
+| **Status bar** | Shows current file path, table/view/index counts, file size, and global transaction indicator |
+
+### Running
+
+```bash
+dotnet run --project samples/Sqlity.Studio
+```
+
+### Architecture
+
+- `Services/SqlitySession` — thin wrapper that owns a `StorageEngine` + `QueryEngine` pair and serializes async engine calls
+- `Services/AppSettings` — JSON settings file (recent databases, last opened path) stored in `%APPDATA%/Sqlity.Studio/`
+- `ViewModels/` — MVVM ViewModels using CommunityToolkit.Mvvm source generation
+- `Views/` — Avalonia AXAML views
+
+The Studio references the Sqlity engine directly (`Sqlity.Query`, `Sqlity.Storage`) with no networking or plugin layer.
