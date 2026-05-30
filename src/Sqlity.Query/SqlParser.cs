@@ -31,7 +31,7 @@ internal sealed class SqlParser
             SqlTokenKind.With => ParseCteStatement(),
             SqlTokenKind.Analyze => ParseAnalyze(),
             SqlTokenKind.Explain => ParseExplain(),
-            _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
+            _ => throw new InvalidOperationException($"{At()}Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
         };
 
         Match(SqlTokenKind.Semicolon);
@@ -62,7 +62,7 @@ internal sealed class SqlParser
                 SqlTokenKind.With => ParseCteStatement(),
                 SqlTokenKind.Analyze => ParseAnalyze(),
                 SqlTokenKind.Explain => ParseExplain(),
-                _ => throw new InvalidOperationException($"Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
+                _ => throw new InvalidOperationException($"{At()}Unsupported SQL statement starting with token '{Peek().Lexeme}'.")
             };
 
             Match(SqlTokenKind.Semicolon);
@@ -148,7 +148,7 @@ internal sealed class SqlParser
             return new AlterTableAddColumnStatement(tableName, new ColumnSpecification(columnName, typeName, IsPrimaryKey: false, IsNotNull: isNotNull));
         }
 
-        throw new InvalidOperationException($"Unsupported ALTER TABLE form. Expected RENAME [TO|COLUMN] or ADD [COLUMN] but found '{Peek().Lexeme}'.");
+        throw new InvalidOperationException($"{At()}Unsupported ALTER TABLE form. Expected RENAME [TO|COLUMN] or ADD [COLUMN] but found '{Peek().Lexeme}'.");
     }
 
     private CreateTableStatement ParseCreateTable()
@@ -269,12 +269,12 @@ internal sealed class SqlParser
         Expect(SqlTokenKind.Plan);
 
         if (Peek().Kind != SqlTokenKind.Select)
-            throw new InvalidOperationException("EXPLAIN QUERY PLAN requires a SELECT statement.");
+            throw new InvalidOperationException($"{At()}EXPLAIN QUERY PLAN requires a SELECT statement.");
 
         var inner = ParseSelectOrSetOperation();
 
         if (inner is not SelectStatement select)
-            throw new InvalidOperationException("EXPLAIN QUERY PLAN only supports plain SELECT statements.");
+            throw new InvalidOperationException($"{At()}EXPLAIN QUERY PLAN only supports plain SELECT statements.");
 
         return new ExplainStatement(select);
     }
@@ -431,10 +431,10 @@ internal sealed class SqlParser
         {
             var tok = Advance();
             if (tok.Kind != SqlTokenKind.IntegerLiteral)
-                throw new InvalidOperationException("Expected an integer literal after LIMIT.");
+                throw new InvalidOperationException($"[{tok.Line}:{tok.Column}] Expected an integer literal after LIMIT.");
             var limitVal = long.Parse(tok.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
             if (limitVal < 0 || limitVal > int.MaxValue)
-                throw new InvalidOperationException($"LIMIT value {limitVal} is out of the valid range [0, {int.MaxValue}].");
+                throw new InvalidOperationException($"[{tok.Line}:{tok.Column}] LIMIT value {limitVal} is out of the valid range [0, {int.MaxValue}].");
             limit = (int)limitVal;
         }
 
@@ -443,10 +443,10 @@ internal sealed class SqlParser
         {
             var tok = Advance();
             if (tok.Kind != SqlTokenKind.IntegerLiteral)
-                throw new InvalidOperationException("Expected an integer literal after OFFSET.");
+                throw new InvalidOperationException($"[{tok.Line}:{tok.Column}] Expected an integer literal after OFFSET.");
             var offsetVal = long.Parse(tok.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
             if (offsetVal < 0 || offsetVal > int.MaxValue)
-                throw new InvalidOperationException($"OFFSET value {offsetVal} is out of the valid range [0, {int.MaxValue}].");
+                throw new InvalidOperationException($"[{tok.Line}:{tok.Column}] OFFSET value {offsetVal} is out of the valid range [0, {int.MaxValue}].");
             offset = (int)offsetVal;
         }
 
@@ -474,7 +474,7 @@ internal sealed class SqlParser
         // The body can itself be a set operation.
         SqlStatement body = Peek().Kind == SqlTokenKind.Select
             ? ParseSelectOrSetOperation()
-            : throw new InvalidOperationException("Expected SELECT after WITH … AS (…).");
+            : throw new InvalidOperationException($"{At()}Expected SELECT after WITH … AS (…).");
 
         return new CteStatement(ctes, body);
     }
@@ -569,10 +569,10 @@ internal sealed class SqlParser
             {
                 var token = Advance();
                 if (token.Kind != SqlTokenKind.IntegerLiteral)
-                    throw new InvalidOperationException("Expected an integer literal after LIMIT.");
+                    throw new InvalidOperationException($"[{token.Line}:{token.Column}] Expected an integer literal after LIMIT.");
                 var limitVal = long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
                 if (limitVal < 0 || limitVal > int.MaxValue)
-                    throw new InvalidOperationException($"LIMIT value {limitVal} is out of the valid range [0, {int.MaxValue}].");
+                    throw new InvalidOperationException($"[{token.Line}:{token.Column}] LIMIT value {limitVal} is out of the valid range [0, {int.MaxValue}].");
                 limit = (int)limitVal;
             }
 
@@ -580,10 +580,10 @@ internal sealed class SqlParser
             {
                 var token = Advance();
                 if (token.Kind != SqlTokenKind.IntegerLiteral)
-                    throw new InvalidOperationException("Expected an integer literal after OFFSET.");
+                    throw new InvalidOperationException($"[{token.Line}:{token.Column}] Expected an integer literal after OFFSET.");
                 var offsetVal = long.Parse(token.Lexeme, System.Globalization.CultureInfo.InvariantCulture);
                 if (offsetVal < 0 || offsetVal > int.MaxValue)
-                    throw new InvalidOperationException($"OFFSET value {offsetVal} is out of the valid range [0, {int.MaxValue}].");
+                    throw new InvalidOperationException($"[{token.Line}:{token.Column}] OFFSET value {offsetVal} is out of the valid range [0, {int.MaxValue}].");
                 offset = (int)offsetVal;
             }
         }
@@ -641,7 +641,7 @@ internal sealed class SqlParser
             SqlTokenKind.DenseRank => WindowFn.DenseRank,
             SqlTokenKind.Lag => WindowFn.Lag,
             SqlTokenKind.Lead => WindowFn.Lead,
-            _ => throw new InvalidOperationException($"Unknown window function token '{fnToken.Lexeme}'.")
+            _ => throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] Unknown window function token '{fnToken.Lexeme}'.")
         };
 
         Expect(SqlTokenKind.OpenParen);
@@ -709,7 +709,7 @@ internal sealed class SqlParser
             SqlTokenKind.Round => ScalarFn.Round,
             SqlTokenKind.Ceil => ScalarFn.Ceil,
             SqlTokenKind.Floor => ScalarFn.Floor,
-            _ => throw new InvalidOperationException($"Expected a scalar function name, but found '{fnToken.Lexeme}'.")
+            _ => throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] Expected a scalar function name, but found '{fnToken.Lexeme}'.")
         };
 
         Expect(SqlTokenKind.OpenParen);
@@ -719,18 +719,18 @@ internal sealed class SqlParser
         Expect(SqlTokenKind.CloseParen);
 
         if (fn is ScalarFn.Nullif or ScalarFn.Ifnull && args.Count != 2)
-            throw new InvalidOperationException($"{fnToken.Lexeme} requires exactly 2 arguments.");
+            throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] {fnToken.Lexeme} requires exactly 2 arguments.");
         if (fn == ScalarFn.Coalesce && args.Count < 2)
-            throw new InvalidOperationException("COALESCE requires at least 2 arguments.");
+            throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] COALESCE requires at least 2 arguments.");
         if (fn is ScalarFn.Upper or ScalarFn.Lower or ScalarFn.Trim or ScalarFn.Length
                  or ScalarFn.Abs or ScalarFn.Ceil or ScalarFn.Floor && args.Count != 1)
-            throw new InvalidOperationException($"{fnToken.Lexeme} requires exactly 1 argument.");
+            throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] {fnToken.Lexeme} requires exactly 1 argument.");
         if (fn == ScalarFn.Substr && args.Count is not (2 or 3))
-            throw new InvalidOperationException("SUBSTR requires 2 or 3 arguments.");
+            throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] SUBSTR requires 2 or 3 arguments.");
         if (fn == ScalarFn.Replace && args.Count != 3)
-            throw new InvalidOperationException("REPLACE requires exactly 3 arguments.");
+            throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] REPLACE requires exactly 3 arguments.");
         if (fn == ScalarFn.Round && args.Count is not (1 or 2))
-            throw new InvalidOperationException("ROUND requires 1 or 2 arguments.");
+            throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] ROUND requires 1 or 2 arguments.");
 
         return new ScalarFunctionSelectItem(fn, args);
     }
@@ -755,7 +755,7 @@ internal sealed class SqlParser
             SqlTokenKind.Min => AggregateFn.Min,
             SqlTokenKind.Max => AggregateFn.Max,
             SqlTokenKind.Avg => AggregateFn.Avg,
-            _ => throw new InvalidOperationException($"Expected an aggregate function name, but found '{fnToken.Lexeme}'.")
+            _ => throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] Expected an aggregate function name, but found '{fnToken.Lexeme}'.")
         };
 
         Expect(SqlTokenKind.OpenParen);
@@ -784,7 +784,7 @@ internal sealed class SqlParser
             SqlTokenKind.Min => AggregateFn.Min,
             SqlTokenKind.Max => AggregateFn.Max,
             SqlTokenKind.Avg => AggregateFn.Avg,
-            _ => throw new InvalidOperationException($"Expected an aggregate function in HAVING, but found '{fnToken.Lexeme}'.")
+            _ => throw new InvalidOperationException($"[{fnToken.Line}:{fnToken.Column}] Expected an aggregate function in HAVING, but found '{fnToken.Lexeme}'.")
         };
 
         Expect(SqlTokenKind.OpenParen);
@@ -911,7 +911,7 @@ internal sealed class SqlParser
         }
 
         if (branches.Count == 0)
-            throw new InvalidOperationException("CASE expression requires at least one WHEN branch.");
+            throw new InvalidOperationException($"{At()}CASE expression requires at least one WHEN branch.");
 
         ScalarExpr? elseResult = null;
         if (Match(SqlTokenKind.Else))
@@ -1014,12 +1014,12 @@ internal sealed class SqlParser
             Advance();
             var patternToken = Advance();
             if (patternToken.Kind != SqlTokenKind.StringLiteral)
-                throw new InvalidOperationException("Expected a string literal after LIKE/ILIKE.");
+                throw new InvalidOperationException($"[{patternToken.Line}:{patternToken.Column}] Expected a string literal after LIKE/ILIKE.");
             return new LikeExpression(tableName, columnName, (string)patternToken.Value!, caseInsensitive, Negated: negated);
         }
 
         if (negated)
-            throw new InvalidOperationException($"NOT must be followed by IN, BETWEEN, or LIKE, but found '{Peek().Lexeme}'.");
+            throw new InvalidOperationException($"{At()}NOT must be followed by IN, BETWEEN, or LIKE, but found '{Peek().Lexeme}'.");
 
         var op = ParseComparisonOp();
 
@@ -1047,7 +1047,7 @@ internal sealed class SqlParser
             SqlTokenKind.GreaterThan => ComparisonOp.GreaterThan,
             SqlTokenKind.LessThanOrEquals => ComparisonOp.LessThanOrEquals,
             SqlTokenKind.GreaterThanOrEquals => ComparisonOp.GreaterThanOrEquals,
-            _ => throw new InvalidOperationException($"Expected a comparison operator, but found '{token.Lexeme}'.")
+            _ => throw new InvalidOperationException($"[{token.Line}:{token.Column}] Expected a comparison operator, but found '{token.Lexeme}'.")
         };
     }
 
@@ -1075,7 +1075,7 @@ internal sealed class SqlParser
             SqlTokenKind.True => new SqlLiteral(true),
             SqlTokenKind.False => new SqlLiteral(false),
             SqlTokenKind.Null => new SqlLiteral(null),
-            _ => throw new InvalidOperationException($"Expected a literal value, but found '{token.Lexeme}'.")
+            _ => throw new InvalidOperationException($"[{token.Line}:{token.Column}] Expected a literal value, but found '{token.Lexeme}'.")
         };
     }
 
@@ -1095,7 +1095,7 @@ internal sealed class SqlParser
         var token = Advance();
         if (token.Kind != kind)
         {
-            throw new InvalidOperationException($"Expected {kind}, but found '{token.Lexeme}'.");
+            throw new InvalidOperationException($"[{token.Line}:{token.Column}] Expected {kind}, but found '{token.Lexeme}'.");
         }
     }
 
@@ -1104,11 +1104,13 @@ internal sealed class SqlParser
         var token = Advance();
         if (token.Kind != SqlTokenKind.Identifier)
         {
-            throw new InvalidOperationException(errorMessage);
+            throw new InvalidOperationException($"[{token.Line}:{token.Column}] {errorMessage}");
         }
 
         return token.Lexeme;
     }
+
+    private string At() => $"[{Peek().Line}:{Peek().Column}] ";
 
     private SqlToken Peek() => _tokens[_position];
 

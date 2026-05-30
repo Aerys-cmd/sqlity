@@ -97,7 +97,7 @@ Items are ordered by impact-to-effort ratio within each phase.
 - **`EXPLAIN QUERY PLAN`** statement — parse `EXPLAIN QUERY PLAN SELECT …` and return plan
   description rows (scan vs seek, index used, estimated rows) instead of data rows ✅
 - **Error messages with source position** — track line and column in `SqlTokenizer`; include
-  position in all parse and bind errors so diagnostics are actionable
+  position in all parse and bind errors so diagnostics are actionable ✅
 - **Interactive CLI REPL** — when no SQL argument is provided, start a read-eval-print loop
   accepting multi-line input terminated by `;`, with `\q` to exit; makes the CLI useful for
   exploratory queries
