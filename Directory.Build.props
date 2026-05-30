@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup>
+    <!--
+      Shared fallback version for internal, non-packable libraries (Core, Query, Storage).
+      Publishable projects (Sqlity.Ado, Sqlity.EFCore, Sqlity.Cli, Sqlity.Studio) each
+      declare their own <Version> in their .csproj to enable independent versioning.
+      CI release workflows override the version at pack/publish time via -p:Version=X.Y.Z.
+    -->
+    <Version>0.1.0</Version>
+    <Authors>Recep Obut</Authors>
+    <Company>Recep Obut</Company>
+    <Copyright>Copyright © 2026 Recep Obut</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/Aerys-cmd/sqlity</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/Aerys-cmd/sqlity</PackageProjectUrl>
+    <!-- Only explicitly opted-in projects produce .nupkg files -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>

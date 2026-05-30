@@ -8,6 +8,7 @@
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <RootNamespace>Sqlity.Studio</RootNamespace>
     <AssemblyName>Sqlity.Studio</AssemblyName>
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

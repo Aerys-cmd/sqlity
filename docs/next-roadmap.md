@@ -87,6 +87,8 @@ Items are ordered by impact-to-effort ratio within each phase.
 
 ## Phase 5 — Provider and developer experience
 
+✅ **Complete.** All items implemented and shipped.
+
 - ✅ **Async ADO.NET** — `OpenAsync`, `CloseAsync`, `ExecuteNonQueryAsync`, `ExecuteScalarAsync`,
   `ExecuteReaderAsync` on `SqlityConnection` and `SqlityCommand`; `ReadAsync`, `NextResultAsync`,
   `CloseAsync`, `DisposeAsync` on `SqlityDataReader`; all return synchronous completions
@@ -101,8 +103,9 @@ Items are ordered by impact-to-effort ratio within each phase.
 - ✅ **Interactive CLI REPL** — when invoked with only a database path on an interactive terminal,
   start a read-eval-print loop; multi-line input is buffered until `;` is found; `\q` or EOF
   exits; errors are printed and the session continues ✅
-- **NuGet packaging** — add `<PackageId>`, `<Version>`, and `<Description>` to `Sqlity.Ado`
-  and `Sqlity.EFCore`; set up a GitHub Actions publish workflow
+- ✅ **NuGet packaging** — `<PackageId>`, `<Version>`, and `<Description>` added to `Sqlity.Ado`
+  and `Sqlity.EFCore`; internal libraries bundled via `PrivateAssets`; GitHub Actions publish
+  workflow (`.github/workflows/publish.yml`) triggers on `v*` tags and pushes to NuGet.org ✅
 - ✅ **EF Core migrations** — `SqlityMigrationsSqlGenerator` generates `CREATE TABLE` / `DROP TABLE`
   DDL; `SqlityHistoryRepository` manages the `__EFMigrationsHistory` table; both are registered
   in the DI container so `dotnet-ef migrations add` and `dotnet-ef database update` work

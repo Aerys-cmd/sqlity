@@ -1,0 +1,113 @@
+name: Release Sqlity.Studio
+
+on:
+  push:
+    tags:
+      - 'studio-v*'
+
+jobs:
+  # ── 1. Extract the version once on Linux; all other jobs consume it. ──────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#studio-v}" >> $GITHUB_OUTPUT
+
+  # ── 2. Build self-contained binaries for each target platform. ────────────
+  #    No dedicated test project exists for Sqlity.Studio; the publish step
+  #    acts as a build-and-sanity verification per platform.
+  build:
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive_ext: tar.gz
+            executable: Sqlity.Studio
+          - os: windows-latest
+            rid: win-x64
+            archive_ext: zip
+            executable: Sqlity.Studio.exe
+          - os: macos-latest
+            rid: osx-arm64
+            archive_ext: tar.gz
+            executable: Sqlity.Studio
+          - os: macos-13
+            rid: osx-x64
+            archive_ext: tar.gz
+            executable: Sqlity.Studio
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Publish
+        run: >
+          dotnet publish samples/Sqlity.Studio/Sqlity.Studio.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:Version=${{ needs.prepare.outputs.version }}
+          -o ./publish
+
+      - name: Verify executable
+        shell: bash
+        run: |
+          if [ ! -f "./publish/${{ matrix.executable }}" ]; then
+            echo "Expected executable not found: ./publish/${{ matrix.executable }}"
+            exit 1
+          fi
+          echo "Build OK: ./publish/${{ matrix.executable }}"
+
+      - name: Archive (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cd ./publish
+          tar -czf ../sqlity-studio-${{ needs.prepare.outputs.version }}-${{ matrix.rid }}.tar.gz .
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >
+          Compress-Archive
+          -Path ./publish/*
+          -DestinationPath ./sqlity-studio-${{ needs.prepare.outputs.version }}-${{ matrix.rid }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlity-studio-${{ matrix.rid }}
+          path: ./sqlity-studio-${{ needs.prepare.outputs.version }}-${{ matrix.rid }}.${{ matrix.archive_ext }}
+
+  # ── 3. Create GitHub Release and attach all platform archives. ────────────
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Sqlity.Studio v${{ needs.prepare.outputs.version }}"
+          files: ./artifacts/*
+          draft: false
+          prerelease: false

@@ -1,0 +1,51 @@
+name: Publish Sqlity.EFCore to NuGet
+
+on:
+  push:
+    tags:
+      - 'efcore-v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#efcore-v}" >> $GITHUB_OUTPUT
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Test
+        # Run scoped tests that cover EFCore and all of its dependencies.
+        # dotnet test builds each project before running tests.
+        run: |
+          dotnet test tests/Sqlity.Query.Tests   --no-restore -c Release
+          dotnet test tests/Sqlity.Storage.Tests --no-restore -c Release
+          dotnet test tests/Sqlity.Ado.Tests     --no-restore -c Release
+          dotnet test tests/Sqlity.EFCore.Tests  --no-restore -c Release
+
+      - name: Pack
+        # Rebuild with the release version so the assembly version matches the package version.
+        run: >
+          dotnet pack src/Sqlity.EFCore/Sqlity.EFCore.csproj
+          --no-restore -c Release
+          -o ./nupkgs
+          -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Push to NuGet.org
+        run: >
+          dotnet nuget push ./nupkgs/*.nupkg
+          --api-key ${{ secrets.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

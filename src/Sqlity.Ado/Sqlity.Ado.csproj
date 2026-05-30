@@ -1,15 +1,37 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\Sqlity.Core\Sqlity.Core.csproj" />
-    <ProjectReference Include="..\Sqlity.Query\Sqlity.Query.csproj" />
-    <ProjectReference Include="..\Sqlity.Storage\Sqlity.Storage.csproj" />
+    <!-- Bundle internal libraries; consumers only need this one package -->
+    <ProjectReference Include="..\Sqlity.Core\Sqlity.Core.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\Sqlity.Query\Sqlity.Query.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\Sqlity.Storage\Sqlity.Storage.csproj" PrivateAssets="all" />
   </ItemGroup>
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <PackageId>Sqlity.Ado</PackageId>
+    <Version>0.1.0</Version>
+    <Description>ADO.NET provider for Sqlity — an educational embedded SQL database engine for .NET 10. Includes SqlityConnection, SqlityCommand, SqlityDataReader, SqlityParameter, and SqlityTransaction.</Description>
+    <PackageTags>sql;sqlite;embedded;database;ado.net;dotnet</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- Register the target that adds bundled internal assemblies -->
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_BundleInternalAssemblies</TargetsForTfmSpecificContentInPackage>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!-- Include internal assembly outputs in the lib/ folder of the package -->
+  <Target Name="_BundleInternalAssemblies">
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="$(MSBuildThisFileDirectory)$(OutputPath)Sqlity.Core.dll" PackagePath="lib/$(TargetFramework)" />
+      <TfmSpecificPackageFile Include="$(MSBuildThisFileDirectory)$(OutputPath)Sqlity.Query.dll" PackagePath="lib/$(TargetFramework)" />
+      <TfmSpecificPackageFile Include="$(MSBuildThisFileDirectory)$(OutputPath)Sqlity.Storage.dll" PackagePath="lib/$(TargetFramework)" />
+    </ItemGroup>
+  </Target>
 
 </Project>

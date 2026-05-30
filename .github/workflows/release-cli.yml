@@ -1,0 +1,120 @@
+name: Release Sqlity.Cli
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+
+jobs:
+  # ── 1. Extract the version once on Linux; all other jobs consume it. ──────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#cli-v}" >> $GITHUB_OUTPUT
+
+  # ── 2. Run scoped tests before building release binaries. ─────────────────
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Test
+        run: |
+          dotnet test tests/Sqlity.Query.Tests   --no-restore -c Release
+          dotnet test tests/Sqlity.Storage.Tests --no-restore -c Release
+          dotnet test tests/Sqlity.Cli.Tests     --no-restore -c Release
+
+  # ── 3. Build self-contained binaries for each target platform. ────────────
+  build:
+    needs: [prepare, test]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive_ext: tar.gz
+          - os: windows-latest
+            rid: win-x64
+            archive_ext: zip
+          - os: macos-latest
+            rid: osx-arm64
+            archive_ext: tar.gz
+          - os: macos-13
+            rid: osx-x64
+            archive_ext: tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Publish
+        run: >
+          dotnet publish samples/Sqlity.Cli/Sqlity.Cli.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:Version=${{ needs.prepare.outputs.version }}
+          -p:PublishSingleFile=true
+          -o ./publish
+
+      - name: Archive (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          cd ./publish
+          tar -czf ../sqlity-cli-${{ needs.prepare.outputs.version }}-${{ matrix.rid }}.tar.gz .
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >
+          Compress-Archive
+          -Path ./publish/*
+          -DestinationPath ./sqlity-cli-${{ needs.prepare.outputs.version }}-${{ matrix.rid }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlity-cli-${{ matrix.rid }}
+          path: ./sqlity-cli-${{ needs.prepare.outputs.version }}-${{ matrix.rid }}.${{ matrix.archive_ext }}
+
+  # ── 4. Create GitHub Release and attach all platform archives. ────────────
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Sqlity.Cli v${{ needs.prepare.outputs.version }}"
+          files: ./artifacts/*
+          draft: false
+          prerelease: false
