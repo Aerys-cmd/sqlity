@@ -1,6 +1,12 @@
 # Sqlity.Cli
 
-`Sqlity.Cli` is the tiny runnable sample for opening a `.sqlity` file and executing one SQL statement at a time.
+`Sqlity.Cli` is the tiny runnable sample for opening a `.sqlity` file and executing SQL statements.
+
+**Single-statement mode:** pass the SQL as a command-line argument.
+
+**Stdin-piping mode:** pipe SQL through standard input.
+
+**Interactive REPL mode:** omit the SQL argument on an interactive terminal to start a read-eval-print loop. Multi-line input is supported — statements are executed when a `;` is encountered. Type `\q` to exit.
 
 These examples are generated from executable tests so the documented command output stays in sync with the sample.
 
@@ -11,6 +17,22 @@ SQLITY_UPDATE_EXECUTABLE_EXAMPLES=1 dotnet test tests/Sqlity.Cli.Tests/Sqlity.Cl
 ```
 
 Each command below reopens the same `demo.sqlity` file, so the workflow mirrors normal CLI usage.
+
+## Interactive REPL
+
+```bash
+dotnet run --project samples/Sqlity.Cli -- demo.sqlity
+```
+
+```text
+sqlity> SELECT 1 + 1;
+2
+(1 row(s))
+sqlity> CREATE TABLE
+     ->   users (id INT64 PRIMARY KEY, name STRING);
+Rows affected: 0
+sqlity> \q
+```
 
 ## Create a table
 

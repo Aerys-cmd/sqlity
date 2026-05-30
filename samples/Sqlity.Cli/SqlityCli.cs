@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using Sqlity.Query;
 
 namespace Sqlity.Cli;
@@ -9,14 +10,19 @@ public static class SqlityCli
         Usage:
           Sqlity.Cli <database-path> "<sql>"
           <sql> | Sqlity.Cli <database-path>
+          Sqlity.Cli <database-path>             (interactive REPL)
         """;
 
-    public static int Run(string[] args, TextReader stdin, TextWriter stdout, TextWriter stderr)
+    public static int Run(string[] args, TextReader stdin, TextWriter stdout, TextWriter stderr, bool isInteractive = false)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(stdin);
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
+
+        // REPL mode: only a database path given and running on an interactive terminal
+        if (args.Length == 1 && isInteractive)
+            return RunRepl(args[0], stdin, stdout, stderr);
 
         if (!TryParseInvocation(args, stdin, stderr, out var invocation))
         {
@@ -48,6 +54,75 @@ public static class SqlityCli
         catch (UnauthorizedAccessException exception)
         {
             stderr.WriteLine(exception.Message);
+            return 1;
+        }
+    }
+
+    private static int RunRepl(string databasePath, TextReader stdin, TextWriter stdout, TextWriter stderr)
+    {
+        try
+        {
+            using var engine = new QueryEngine(databasePath);
+            var buffer = new StringBuilder();
+
+            while (true)
+            {
+                stdout.Write(buffer.Length == 0 ? "sqlity> " : "     -> ");
+                stdout.Flush();
+
+                var line = stdin.ReadLine();
+                if (line == null) // EOF (Ctrl+D)
+                    break;
+
+                if (buffer.Length == 0 && string.Equals(line.Trim(), @"\q", StringComparison.Ordinal))
+                    break;
+
+                buffer.AppendLine(line);
+
+                if (!line.Contains(';'))
+                    continue;
+
+                var sql = buffer.ToString().Trim();
+                buffer.Clear();
+
+                if (string.IsNullOrWhiteSpace(sql))
+                    continue;
+
+                try
+                {
+                    var result = engine.Execute(sql);
+                    WriteResult(stdout, result);
+                }
+                catch (ArgumentException ex)
+                {
+                    stderr.WriteLine(ex.Message);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    stderr.WriteLine(ex.Message);
+                }
+            }
+
+            return 0;
+        }
+        catch (ArgumentException ex)
+        {
+            stderr.WriteLine(ex.Message);
+            return 1;
+        }
+        catch (InvalidOperationException ex)
+        {
+            stderr.WriteLine(ex.Message);
+            return 1;
+        }
+        catch (IOException ex)
+        {
+            stderr.WriteLine(ex.Message);
+            return 1;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            stderr.WriteLine(ex.Message);
             return 1;
         }
     }

@@ -28,7 +28,13 @@ internal static class CliSampleReadme
         var builder = new StringBuilder();
         builder.AppendLine("# Sqlity.Cli");
         builder.AppendLine();
-        builder.AppendLine("`Sqlity.Cli` is the tiny runnable sample for opening a `.sqlity` file and executing one SQL statement at a time.");
+        builder.AppendLine("`Sqlity.Cli` is the tiny runnable sample for opening a `.sqlity` file and executing SQL statements.");
+        builder.AppendLine();
+        builder.AppendLine("**Single-statement mode:** pass the SQL as a command-line argument.");
+        builder.AppendLine();
+        builder.AppendLine("**Stdin-piping mode:** pipe SQL through standard input.");
+        builder.AppendLine();
+        builder.AppendLine("**Interactive REPL mode:** omit the SQL argument on an interactive terminal to start a read-eval-print loop. Multi-line input is supported — statements are executed when a `;` is encountered. Type `\\q` to exit.");
         builder.AppendLine();
         builder.AppendLine("These examples are generated from executable tests so the documented command output stays in sync with the sample.");
         builder.AppendLine();
@@ -39,6 +45,22 @@ internal static class CliSampleReadme
         builder.AppendLine("```");
         builder.AppendLine();
         builder.AppendLine("Each command below reopens the same `demo.sqlity` file, so the workflow mirrors normal CLI usage.");
+        builder.AppendLine();
+        builder.AppendLine("## Interactive REPL");
+        builder.AppendLine();
+        builder.AppendLine("```bash");
+        builder.AppendLine("dotnet run --project samples/Sqlity.Cli -- demo.sqlity");
+        builder.AppendLine("```");
+        builder.AppendLine();
+        builder.AppendLine("```text");
+        builder.AppendLine("sqlity> SELECT 1 + 1;");
+        builder.AppendLine("2");
+        builder.AppendLine("(1 row(s))");
+        builder.AppendLine("sqlity> CREATE TABLE");
+        builder.AppendLine("     ->   users (id INT64 PRIMARY KEY, name STRING);");
+        builder.AppendLine("Rows affected: 0");
+        builder.AppendLine("sqlity> \\q");
+        builder.AppendLine("```");
         builder.AppendLine();
 
         using var scenario = new ExampleScenario();

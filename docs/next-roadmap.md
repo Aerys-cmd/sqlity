@@ -98,10 +98,12 @@ Items are ordered by impact-to-effort ratio within each phase.
   description rows (scan vs seek, index used, estimated rows) instead of data rows ✅
 - **Error messages with source position** — track line and column in `SqlTokenizer`; include
   position in all parse and bind errors so diagnostics are actionable ✅
-- **Interactive CLI REPL** — when no SQL argument is provided, start a read-eval-print loop
-  accepting multi-line input terminated by `;`, with `\q` to exit; makes the CLI useful for
-  exploratory queries
+- ✅ **Interactive CLI REPL** — when invoked with only a database path on an interactive terminal,
+  start a read-eval-print loop; multi-line input is buffered until `;` is found; `\q` or EOF
+  exits; errors are printed and the session continues ✅
 - **NuGet packaging** — add `<PackageId>`, `<Version>`, and `<Description>` to `Sqlity.Ado`
   and `Sqlity.EFCore`; set up a GitHub Actions publish workflow
-- **EF Core migrations** — implement `IMigrationsSqlGenerator` and related services so
-  `dotnet-ef migrations add` and `dotnet-ef database update` work against Sqlity
+- ✅ **EF Core migrations** — `SqlityMigrationsSqlGenerator` generates `CREATE TABLE` / `DROP TABLE`
+  DDL; `SqlityHistoryRepository` manages the `__EFMigrationsHistory` table; both are registered
+  in the DI container so `dotnet-ef migrations add` and `dotnet-ef database update` work
+  against Sqlity ✅
